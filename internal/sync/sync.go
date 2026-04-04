@@ -2,20 +2,115 @@ package sync
 
 import (
 	"fmt"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 )
 
-// CopySkill copies a skill directory from src to dst.
-// Removes dst first to ensure clean state (no stale files).
+// LinkSkill creates a symlink from dst pointing to src.
+// Removes any existing dst (file, dir, or old symlink) first.
+func LinkSkill(src, dst string) error {
+	// Ensure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("creating parent dir: %w", err)
+	}
+
+	// Remove existing (could be old symlink, dir, or file)
+	if err := os.RemoveAll(dst); err != nil {
+		return fmt.Errorf("removing old skill at %s: %w", dst, err)
+	}
+
+	// Resolve src to absolute path for the symlink
+	absSrc, err := filepath.Abs(src)
+	if err != nil {
+		return fmt.Errorf("resolving absolute path: %w", err)
+	}
+
+	if err := os.Symlink(absSrc, dst); err != nil {
+		return fmt.Errorf("creating symlink %s -> %s: %w", dst, absSrc, err)
+	}
+	return nil
+}
+
+// RemoveSkill removes a skill (symlink or directory).
+func RemoveSkill(skillPath string) error {
+	// os.Remove works for symlinks, os.RemoveAll for dirs
+	info, err := os.Lstat(skillPath)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", skillPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return os.Remove(skillPath)
+	}
+	return os.RemoveAll(skillPath)
+}
+
+// All syncs all skills from repoDir/skills/ to each target path using symlinks.
+// enabledFilter: if non-nil, only skills where enabledFilter(name) returns true are synced.
+// Returns the number of skills synced.
+func All(repoDir string, targets map[string]string, enabledFilter func(string) bool) (int, error) {
+	skillsDir := filepath.Join(repoDir, "skills")
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		return 0, fmt.Errorf("reading skills dir: %w", err)
+	}
+
+	count := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		src := filepath.Join(skillsDir, name)
+		if _, err := os.Stat(filepath.Join(src, "SKILL.md")); err != nil {
+			continue
+		}
+
+		if enabledFilter != nil && !enabledFilter(name) {
+			// Skill is disabled — remove any existing symlinks
+			for _, targetPath := range targets {
+				dst := filepath.Join(targetPath, name)
+				if _, err := os.Lstat(dst); err == nil {
+					os.Remove(dst)
+				}
+			}
+			continue
+		}
+
+		for _, targetPath := range targets {
+			dst := filepath.Join(targetPath, name)
+			if err := LinkSkill(src, dst); err != nil {
+				return count, fmt.Errorf("linking %s: %w", name, err)
+			}
+		}
+		count++
+	}
+	return count, nil
+}
+
+// One syncs a single named skill to all targets using symlinks.
+func One(repoDir, name string, targets map[string]string) error {
+	src := filepath.Join(repoDir, "skills", name)
+	if _, err := os.Stat(filepath.Join(src, "SKILL.md")); err != nil {
+		return fmt.Errorf("skill %q not found in repo", name)
+	}
+
+	for _, targetPath := range targets {
+		dst := filepath.Join(targetPath, name)
+		if err := LinkSkill(src, dst); err != nil {
+			return fmt.Errorf("linking %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// CopySkill copies a skill directory from src to dst (used by submit workflow).
+// Removes dst first to ensure clean state.
 func CopySkill(src, dst string) error {
 	if err := os.RemoveAll(dst); err != nil {
 		return fmt.Errorf("removing old skill: %w", err)
 	}
 
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -31,74 +126,13 @@ func CopySkill(src, dst string) error {
 	})
 }
 
-// RemoveSkill removes a skill directory.
-func RemoveSkill(skillDir string) error {
-	return os.RemoveAll(skillDir)
-}
-
-// All syncs all skills from repoDir/skills/ to each target path.
-// Returns the number of skills synced.
-func All(repoDir string, targets map[string]string) (int, error) {
-	skillsDir := filepath.Join(repoDir, "skills")
-	entries, err := os.ReadDir(skillsDir)
-	if err != nil {
-		return 0, fmt.Errorf("reading skills dir: %w", err)
-	}
-
-	count := 0
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		src := filepath.Join(skillsDir, e.Name())
-		if _, err := os.Stat(filepath.Join(src, "SKILL.md")); err != nil {
-			continue
-		}
-
-		for _, targetPath := range targets {
-			dst := filepath.Join(targetPath, e.Name())
-			if err := CopySkill(src, dst); err != nil {
-				return count, fmt.Errorf("syncing %s: %w", e.Name(), err)
-			}
-		}
-		count++
-	}
-	return count, nil
-}
-
-// One syncs a single named skill to all targets.
-func One(repoDir, name string, targets map[string]string) error {
-	src := filepath.Join(repoDir, "skills", name)
-	if _, err := os.Stat(filepath.Join(src, "SKILL.md")); err != nil {
-		return fmt.Errorf("skill %q not found in repo", name)
-	}
-
-	for _, targetPath := range targets {
-		dst := filepath.Join(targetPath, name)
-		if err := CopySkill(src, dst); err != nil {
-			return fmt.Errorf("syncing %s: %w", name, err)
-		}
-	}
-	return nil
-}
-
 func copyFile(src, dst string) error {
-	in, err := os.Open(src)
+	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
-
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, in)
-	return err
+	return os.WriteFile(dst, data, 0o644)
 }

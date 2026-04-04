@@ -4,10 +4,11 @@ set -euo pipefail
 echo "=== myskills e2e test ==="
 
 TESTDIR=$(mktemp -d)
-trap "rm -rf $TESTDIR" EXIT
+trap "rm -rf $TESTDIR 2>/dev/null || true" EXIT
 
 export HOME="$TESTDIR/home"
 export XDG_CONFIG_HOME="$TESTDIR/home/.config"
+export XDG_CACHE_HOME="$TESTDIR/home/.cache"
 mkdir -p "$HOME"
 
 # Build
@@ -16,34 +17,49 @@ go build -o "$TESTDIR/myskills" ./cmd/myskills
 
 BIN="$TESTDIR/myskills"
 
-# Create a fake remote repo
-REMOTE="$TESTDIR/remote"
-mkdir -p "$REMOTE"
-git -C "$REMOTE" init --bare 2>/dev/null
+# Create two fake remote repos
+REMOTE1="$TESTDIR/remote1"
+REMOTE2="$TESTDIR/remote2"
+mkdir -p "$REMOTE1" "$REMOTE2"
+git -C "$REMOTE1" init --bare 2>/dev/null
+git -C "$REMOTE2" init --bare 2>/dev/null
 
-WORK="$TESTDIR/work"
-mkdir -p "$WORK"
-git -C "$WORK" init 2>/dev/null
-git -C "$WORK" config user.email "test@test.com"
-git -C "$WORK" config user.name "Test"
+# Populate first remote (org skills)
+WORK1="$TESTDIR/work1"
+mkdir -p "$WORK1"
+git -C "$WORK1" init 2>/dev/null
+git -C "$WORK1" config user.email "test@test.com"
+git -C "$WORK1" config user.name "Test"
 
-# Create a skill in the work repo
-mkdir -p "$WORK/skills/hello"
-cat > "$WORK/skills/hello/SKILL.md" << 'SKILLEOF'
+mkdir -p "$WORK1/skills/deploy"
+cat > "$WORK1/skills/deploy/SKILL.md" << 'EOF'
 ---
-name: hello
-description: A test skill that greets the user with helpful instructions for getting started.
+name: deploy
+description: Deploy the application to production with safety checks and rollback support.
 metadata:
   team: platform
 ---
 
-# Hello
+# Deploy
 
-Say hello to the user.
-SKILLEOF
+Run the deploy script.
+EOF
 
-# Create .myskills.yaml
-cat > "$WORK/.myskills.yaml" << 'RULESEOF'
+mkdir -p "$WORK1/skills/review"
+cat > "$WORK1/skills/review/SKILL.md" << 'EOF'
+---
+name: review
+description: Code review workflow with automated checks and style enforcement.
+metadata:
+  team: platform
+---
+
+# Review
+
+Review the code.
+EOF
+
+cat > "$WORK1/.myskills.yaml" << 'EOF'
 org: test
 validation:
   description_min_length: 20
@@ -53,26 +69,55 @@ validation:
     - platform
     - infra
   max_skill_md_lines: 500
-RULESEOF
+EOF
 
-git -C "$WORK" add .
-git -C "$WORK" commit -m "init" 2>/dev/null
-git -C "$WORK" remote add origin "$REMOTE"
-git -C "$WORK" push origin HEAD:main 2>/dev/null
+git -C "$WORK1" add .
+git -C "$WORK1" commit -m "init" 2>/dev/null
+git -C "$WORK1" remote add origin "$REMOTE1"
+git -C "$WORK1" push origin HEAD:main 2>/dev/null
 
-# Create fake .claude directory so tool detection works
+# Populate second remote (community skills)
+WORK2="$TESTDIR/work2"
+mkdir -p "$WORK2"
+git -C "$WORK2" init 2>/dev/null
+git -C "$WORK2" config user.email "test@test.com"
+git -C "$WORK2" config user.name "Test"
+
+mkdir -p "$WORK2/skills/debug"
+cat > "$WORK2/skills/debug/SKILL.md" << 'EOF'
+---
+name: debug
+description: Systematic debugging workflow for finding and fixing bugs quickly.
+metadata:
+  team: community
+---
+
+# Debug
+
+Debug the issue.
+EOF
+
+git -C "$WORK2" add .
+git -C "$WORK2" commit -m "init" 2>/dev/null
+git -C "$WORK2" remote add origin "$REMOTE2"
+git -C "$WORK2" push origin HEAD:main 2>/dev/null
+
+# Create fake .claude directory
 mkdir -p "$HOME/.claude"
 
 # Test: validate
 echo "Testing validate..."
-$BIN validate "$WORK/skills/hello"
+$BIN validate "$WORK1/skills/deploy"
 echo "  ✓ validate works"
 
-# Test: config set (create config manually since init is interactive)
+# Manually set up config (since init is interactive for tool detection)
 mkdir -p "$XDG_CONFIG_HOME/myskills"
 cat > "$XDG_CONFIG_HOME/myskills/config.yaml" << EOF
-repo: $REMOTE
-cache_dir: $XDG_CONFIG_HOME/myskills/repo
+repos:
+  - name: org
+    url: $REMOTE1
+  - name: community
+    url: $REMOTE2
 github:
   method: gh
 targets:
@@ -90,30 +135,42 @@ targets:
     skill_path: $HOME/.config/opencode/skills
 EOF
 
-# Clone the repo cache
-git clone "$REMOTE" "$XDG_CONFIG_HOME/myskills/repo" 2>/dev/null
+# Clone both repos to cache
+mkdir -p "$XDG_CACHE_HOME/myskills/repos"
+git clone "$REMOTE1" "$XDG_CACHE_HOME/myskills/repos/org" 2>/dev/null
+git clone "$REMOTE2" "$XDG_CACHE_HOME/myskills/repos/community" 2>/dev/null
 
-# Test: sync
-echo "Testing sync..."
+# Test: sync (multi-repo)
+echo "Testing sync (multi-repo)..."
 $BIN sync
 echo "  ✓ sync works"
 
-# Verify files were copied
-if [ -f "$HOME/.claude/skills/hello/SKILL.md" ]; then
-  echo "  ✓ skill copied to claude"
-else
-  echo "  ✗ skill NOT found in claude dir" >&2
-  exit 1
-fi
+# Verify symlinks exist
+for skill in deploy review debug; do
+  link="$HOME/.claude/skills/$skill"
+  if [ -L "$link" ]; then
+    echo "  ✓ $skill is a symlink"
+  else
+    echo "  ✗ $skill is NOT a symlink" >&2
+    exit 1
+  fi
+  # Verify SKILL.md is accessible through symlink
+  if [ -f "$link/SKILL.md" ]; then
+    echo "  ✓ $skill/SKILL.md accessible"
+  else
+    echo "  ✗ $skill/SKILL.md NOT accessible" >&2
+    exit 1
+  fi
+done
 
-# Test: list
+# Test: list (multi-repo)
 echo "Testing list..."
 $BIN list
 echo "  ✓ list works"
 
 # Test: info
 echo "Testing info..."
-$BIN info hello
+$BIN info deploy
 echo "  ✓ info works"
 
 # Test: doctor
@@ -128,9 +185,9 @@ echo "  ✓ config list works"
 
 # Test: remove
 echo "Testing remove..."
-$BIN remove hello
-if [ -d "$HOME/.claude/skills/hello" ]; then
-  echo "  ✗ skill NOT removed" >&2
+$BIN remove deploy
+if [ -L "$HOME/.claude/skills/deploy" ] || [ -d "$HOME/.claude/skills/deploy" ]; then
+  echo "  ✗ deploy NOT removed" >&2
   exit 1
 fi
 echo "  ✓ remove works"
@@ -142,6 +199,16 @@ if [ -f "$XDG_CONFIG_HOME/myskills/dev/test-skill/SKILL.md" ]; then
   echo "  ✓ dev scaffold works"
 else
   echo "  ✗ dev scaffold failed" >&2
+  exit 1
+fi
+
+# Test: sync single skill
+echo "Testing sync single skill..."
+$BIN sync debug
+if [ -L "$HOME/.claude/skills/debug" ]; then
+  echo "  ✓ single skill sync works"
+else
+  echo "  ✗ single skill sync failed" >&2
   exit 1
 fi
 

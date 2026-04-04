@@ -16,6 +16,7 @@ import (
 	"github.com/sbp/myskills/internal/repo"
 	"github.com/sbp/myskills/internal/skill"
 	"github.com/sbp/myskills/internal/sync"
+	"github.com/sbp/myskills/internal/tui"
 	"github.com/sbp/myskills/internal/validate"
 
 	"github.com/spf13/cobra"
@@ -32,10 +33,12 @@ func main() {
 
 	root.AddCommand(
 		newInitCmd(),
+		newAddRepoCmd(),
 		newSyncCmd(),
 		newListCmd(),
 		newInfoCmd(),
 		newValidateCmd(),
+		newEnableCmd(),
 		newDevCmd(),
 		newSubmitCmd(),
 		newRemoveCmd(),
@@ -75,25 +78,35 @@ func targetNames(targets map[string]string) []string {
 	return names
 }
 
+// repoSkillFilter returns a filter that checks if a skill from a given repo is enabled.
+func repoSkillFilter(cfg config.Config, repoName string) func(string) bool {
+	return func(name string) bool {
+		return !cfg.IsSkillDisabledInRepo(repoName, name)
+	}
+}
+
 // --- init ---
 
 func newInitCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "init",
-		Short: "Configure repo URL, detect tools, write config",
+		Use:   "init <repo-url> [name]",
+		Short: "Set up myskills with a repo, detect tools, write config",
+		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg := config.Default()
-
-			fmt.Print("Repository URL: ")
-			var repoURL string
-			fmt.Scanln(&repoURL)
-			if repoURL == "" {
-				return fmt.Errorf("repository URL is required")
+			repoURL := args[0]
+			repoName := "default"
+			if len(args) == 2 {
+				repoName = args[1]
 			}
-			cfg.Repo = repoURL
 
-			cacheDir := config.ExpandPath(cfg.CacheDir)
-			fmt.Printf("Cloning repository to %s...\n", cacheDir)
+			cfg := config.Default()
+			cfg.Repos = []config.Repo{{Name: repoName, URL: repoURL}}
+
+			cacheDir := config.RepoDir(repoName)
+			fmt.Printf("Cloning %s to %s...\n", repoURL, cacheDir)
+			if err := os.MkdirAll(filepath.Dir(cacheDir), 0o755); err != nil {
+				return fmt.Errorf("creating cache dir: %w", err)
+			}
 			if err := repo.Clone(repoURL, cacheDir); err != nil {
 				return err
 			}
@@ -134,23 +147,62 @@ func newInitCmd() *cobra.Command {
 	}
 }
 
-// --- sync ---
+// --- add-repo ---
 
-func newSyncCmd() *cobra.Command {
+func newAddRepoCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "sync [skill-name]",
-		Short: "Pull latest and copy skills to tool directories",
-		Args:  cobra.MaximumNArgs(1),
+		Use:   "add-repo <url> <name>",
+		Short: "Add another skill repository",
+		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
 				return fmt.Errorf("load config: %w (run 'myskills init' first)", err)
 			}
 
-			cacheDir := config.ExpandPath(cfg.CacheDir)
-			fmt.Println("Pulling latest...")
-			if err := repo.Pull(cacheDir); err != nil {
+			repoURL, repoName := args[0], args[1]
+
+			// Check for duplicate names
+			for _, r := range cfg.Repos {
+				if r.Name == repoName {
+					return fmt.Errorf("repo %q already exists", repoName)
+				}
+			}
+
+			cacheDir := config.RepoDir(repoName)
+			fmt.Printf("Cloning %s to %s...\n", repoURL, cacheDir)
+			if err := os.MkdirAll(filepath.Dir(cacheDir), 0o755); err != nil {
+				return fmt.Errorf("creating cache dir: %w", err)
+			}
+			if err := repo.Clone(repoURL, cacheDir); err != nil {
 				return err
+			}
+			fmt.Println("  ✓ Cloned")
+
+			cfg.Repos = append(cfg.Repos, config.Repo{Name: repoName, URL: repoURL})
+			if err := config.Save(cfg, config.Path()); err != nil {
+				return err
+			}
+			fmt.Printf("✓ Added repo %q. Run 'myskills sync' to install skills.\n", repoName)
+			return nil
+		},
+	}
+}
+
+// --- sync ---
+
+func newSyncCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "sync [skill-name]",
+		Short: "Pull latest and symlink skills to tool directories",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return fmt.Errorf("load config: %w (run 'myskills init' first)", err)
+			}
+			if len(cfg.Repos) == 0 {
+				return fmt.Errorf("no repos configured — run 'myskills init'")
 			}
 
 			targets := enabledTargets(cfg)
@@ -158,31 +210,55 @@ func newSyncCmd() *cobra.Command {
 				return fmt.Errorf("no targets enabled — run 'myskills config set targets.<name>.enabled true'")
 			}
 
-			if len(args) == 1 {
-				name := args[0]
-				if err := sync.One(cacheDir, name, targets); err != nil {
-					return err
+			totalCount := 0
+			for _, r := range cfg.Repos {
+				cacheDir := config.RepoDir(r.Name)
+				fmt.Printf("[%s] Pulling latest...\n", r.Name)
+				if err := repo.Pull(cacheDir); err != nil {
+					fmt.Printf("[%s] ✗ pull failed: %v\n", r.Name, err)
+					continue
 				}
-				fmt.Printf("✓ %s synced to %s\n", name, strings.Join(targetNames(targets), ", "))
-			} else {
-				count, err := sync.All(cacheDir, targets)
-				if err != nil {
-					return err
+
+				if len(args) == 1 {
+					name := args[0]
+					if cfg.IsSkillDisabledInRepo(r.Name, name) {
+						fmt.Printf("[%s] %s is disabled — run 'myskills enable'\n", r.Name, name)
+						continue
+					}
+					if err := sync.One(cacheDir, name, targets); err != nil {
+						// Skill might not exist in this repo, try the next
+						continue
+					}
+					fmt.Printf("[%s] ✓ %s linked to %s\n", r.Name, name, strings.Join(targetNames(targets), ", "))
+					totalCount++
+				} else {
+					count, err := sync.All(cacheDir, targets, repoSkillFilter(cfg, r.Name))
+					if err != nil {
+						fmt.Printf("[%s] ✗ sync failed: %v\n", r.Name, err)
+						continue
+					}
+					fmt.Printf("[%s] ✓ %d skills linked to %s\n", r.Name, count, strings.Join(targetNames(targets), ", "))
+					totalCount += count
 				}
-				fmt.Printf("✓ %d skills synced to %s\n", count, strings.Join(targetNames(targets), ", "))
+			}
+
+			if len(args) == 0 {
+				fmt.Printf("\n✓ %d total skills linked\n", totalCount)
 			}
 
 			// Update manifest
 			mPath := manifestPath()
 			m, _ := manifest.Load(mPath)
 			m.LastSync = time.Now().UTC()
-
-			skills, _ := repo.ListSkills(cacheDir)
-			for _, name := range skills {
-				hash, _ := repo.CommitHashForPath(cacheDir, filepath.Join("skills", name))
-				m.Skills[name] = manifest.SkillEntry{
-					Commit:   hash,
-					SyncedAt: time.Now().UTC(),
+			for _, r := range cfg.Repos {
+				cacheDir := config.RepoDir(r.Name)
+				skills, _ := repo.ListSkills(cacheDir)
+				for _, name := range skills {
+					hash, _ := repo.CommitHashForPath(cacheDir, filepath.Join("skills", name))
+					m.Skills[name] = manifest.SkillEntry{
+						Commit:   hash,
+						SyncedAt: time.Now().UTC(),
+					}
 				}
 			}
 			manifest.Save(m, mPath)
@@ -197,36 +273,42 @@ func newSyncCmd() *cobra.Command {
 func newListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List installed skills with status",
+		Short: "List skills with enabled/synced status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
 				return fmt.Errorf("load config: %w (run 'myskills init' first)", err)
 			}
 
-			cacheDir := config.ExpandPath(cfg.CacheDir)
-			skills, err := repo.ListSkills(cacheDir)
-			if err != nil {
-				return err
-			}
-
 			m, _ := manifest.Load(manifestPath())
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "SKILL\tSTATUS\tSYNCED")
-			for _, name := range skills {
-				hash, _ := repo.CommitHashForPath(cacheDir, filepath.Join("skills", name))
-				status := "not installed"
-				synced := "-"
-				if entry, ok := m.Skills[name]; ok {
-					synced = entry.SyncedAt.Format("2006-01-02 15:04")
-					if entry.Commit == hash {
-						status = "current"
-					} else {
-						status = "outdated"
-					}
+			fmt.Fprintln(w, "REPO\tSKILL\tENABLED\tSTATUS\tSYNCED")
+
+			for _, r := range cfg.Repos {
+				cacheDir := config.RepoDir(r.Name)
+				skills, err := repo.ListSkills(cacheDir)
+				if err != nil {
+					continue
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\n", name, status, synced)
+				for _, name := range skills {
+					hash, _ := repo.CommitHashForPath(cacheDir, filepath.Join("skills", name))
+					enabled := "yes"
+					if cfg.IsSkillDisabledInRepo(r.Name, name) {
+						enabled = "no"
+					}
+					status := "not installed"
+					synced := "-"
+					if entry, ok := m.Skills[name]; ok {
+						synced = entry.SyncedAt.Format("2006-01-02 15:04")
+						if entry.Commit == hash {
+							status = "current"
+						} else {
+							status = "outdated"
+						}
+					}
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.Name, name, enabled, status, synced)
+				}
 			}
 			w.Flush()
 			return nil
@@ -247,33 +329,121 @@ func newInfoCmd() *cobra.Command {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			cacheDir := config.ExpandPath(cfg.CacheDir)
-			skillDir := repo.SkillDir(cacheDir, args[0])
-			skillPath := filepath.Join(skillDir, "SKILL.md")
+			name := args[0]
 
-			s, err := skill.Parse(skillPath)
+			// Find skill across repos
+			for _, r := range cfg.Repos {
+				cacheDir := config.RepoDir(r.Name)
+				skillDir := repo.SkillDir(cacheDir, name)
+				skillPath := filepath.Join(skillDir, "SKILL.md")
+
+				s, err := skill.Parse(skillPath)
+				if err != nil {
+					continue
+				}
+
+				fmt.Printf("Name:        %s\n", s.Name)
+				fmt.Printf("Repo:        %s\n", r.Name)
+				fmt.Printf("Description: %s\n", s.Description)
+				if team := s.Metadata["team"]; team != "" {
+					fmt.Printf("Team:        %s\n", team)
+				}
+				enabled := "yes"
+				if cfg.IsSkillDisabledInRepo(r.Name, name) {
+					enabled = "no"
+				}
+				fmt.Printf("Enabled:     %s\n", enabled)
+
+				fmt.Println("\nFiles:")
+				filepath.WalkDir(skillDir, func(path string, d os.DirEntry, err error) error {
+					if err != nil {
+						return nil
+					}
+					rel, _ := filepath.Rel(skillDir, path)
+					if rel == "." {
+						return nil
+					}
+					fmt.Printf("  %s\n", rel)
+					return nil
+				})
+				return nil
+			}
+
+			return fmt.Errorf("skill %q not found in any repo", name)
+		},
+	}
+}
+
+// --- enable ---
+
+func newEnableCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "enable",
+		Short: "Toggle which skills are enabled (interactive picker)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return fmt.Errorf("load config: %w (run 'myskills init' first)", err)
+			}
+
+			var items []tui.SkillItem
+			for _, r := range cfg.Repos {
+				cacheDir := config.RepoDir(r.Name)
+				skills, err := repo.ListSkills(cacheDir)
+				if err != nil {
+					continue
+				}
+				for _, name := range skills {
+					skillPath := filepath.Join(repo.SkillDir(cacheDir, name), "SKILL.md")
+					desc := ""
+					if s, err := skill.Parse(skillPath); err == nil {
+						desc = s.Description
+					}
+
+					displayName := name
+					if len(cfg.Repos) > 1 {
+						displayName = r.Name + ":" + name
+					}
+
+					items = append(items, tui.SkillItem{
+						Name:        displayName,
+						Description: desc,
+						Enabled:     !cfg.IsSkillDisabledInRepo(r.Name, name),
+					})
+				}
+			}
+
+			if len(items) == 0 {
+				fmt.Println("No skills found in any repo.")
+				return nil
+			}
+
+			result, err := tui.RunPicker(items)
 			if err != nil {
 				return err
 			}
 
-			fmt.Printf("Name:        %s\n", s.Name)
-			fmt.Printf("Description: %s\n", s.Description)
-			if team := s.Metadata["team"]; team != "" {
-				fmt.Printf("Team:        %s\n", team)
+			// Update config
+			for _, item := range result {
+				// Strip repo prefix if present
+				skillName := item.Name
+				if parts := strings.SplitN(item.Name, ":", 2); len(parts) == 2 {
+					skillName = item.Name // Keep qualified name for disable list
+				}
+				cfg.SetSkillDisabled(skillName, !item.Enabled)
 			}
 
-			fmt.Println("\nFiles:")
-			filepath.WalkDir(skillDir, func(path string, d os.DirEntry, err error) error {
-				if err != nil {
-					return nil
+			if err := config.Save(cfg, config.Path()); err != nil {
+				return err
+			}
+
+			enabled := 0
+			for _, item := range result {
+				if item.Enabled {
+					enabled++
 				}
-				rel, _ := filepath.Rel(skillDir, path)
-				if rel == "." {
-					return nil
-				}
-				fmt.Printf("  %s\n", rel)
-				return nil
-			})
+			}
+			fmt.Printf("✓ %d/%d skills enabled. Run 'myskills sync' to apply.\n", enabled, len(result))
 			return nil
 		},
 	}
@@ -291,13 +461,15 @@ func newValidateCmd() *cobra.Command {
 
 			errs := validate.Spec(path)
 
-			// Try to load org rules from cached repo
+			// Try to load org rules from each cached repo
 			cfg, cfgErr := loadConfig()
 			if cfgErr == nil {
-				cacheDir := config.ExpandPath(cfg.CacheDir)
-				rulesPath := filepath.Join(cacheDir, ".myskills.yaml")
-				if rules, err := validate.LoadOrgRules(rulesPath); err == nil {
-					errs = append(errs, validate.Org(path, rules)...)
+				for _, r := range cfg.Repos {
+					rulesPath := filepath.Join(config.RepoDir(r.Name), ".myskills.yaml")
+					if rules, err := validate.LoadOrgRules(rulesPath); err == nil {
+						errs = append(errs, validate.Org(path, rules)...)
+						break // Use first repo's rules
+					}
 				}
 			}
 
@@ -343,45 +515,68 @@ func newDevCmd() *cobra.Command {
 // --- submit ---
 
 func newSubmitCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "submit <name>",
 		Short: "Validate and open a PR for a skill",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig()
-			if err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
-
-			name := args[0]
-			devDir := filepath.Join(config.Dir(), "dev", name)
-
-			fmt.Println("Validating...")
-			errs := validate.Spec(devDir)
-			if len(errs) > 0 {
-				for _, e := range errs {
-					fmt.Printf("  ✗ %s\n", e)
-				}
-				return fmt.Errorf("validation failed — fix issues before submitting")
-			}
-			fmt.Println("  ✓ Valid")
-
-			cacheDir := config.ExpandPath(cfg.CacheDir)
-			dst := repo.SkillDir(cacheDir, name)
-			fmt.Println("Copying to repo...")
-			if err := sync.CopySkill(devDir, dst); err != nil {
-				return err
-			}
-			fmt.Println("  ✓ Copied")
-
-			fmt.Println("Creating PR...")
-			if err := gh.Submit(cacheDir, name, cfg.GitHub.Method, cfg.GitHub.Token); err != nil {
-				return err
-			}
-
-			return nil
-		},
 	}
+	cmd.Flags().String("repo", "", "Target repo name (defaults to first repo)")
+
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		cfg, err := loadConfig()
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+		if len(cfg.Repos) == 0 {
+			return fmt.Errorf("no repos configured")
+		}
+
+		name := args[0]
+		devDir := filepath.Join(config.Dir(), "dev", name)
+
+		fmt.Println("Validating...")
+		errs := validate.Spec(devDir)
+		if len(errs) > 0 {
+			for _, e := range errs {
+				fmt.Printf("  ✗ %s\n", e)
+			}
+			return fmt.Errorf("validation failed — fix issues before submitting")
+		}
+		fmt.Println("  ✓ Valid")
+
+		// Pick target repo
+		repoName, _ := cmd.Flags().GetString("repo")
+		targetRepo := cfg.Repos[0]
+		if repoName != "" {
+			found := false
+			for _, r := range cfg.Repos {
+				if r.Name == repoName {
+					targetRepo = r
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("repo %q not found", repoName)
+			}
+		}
+
+		cacheDir := config.RepoDir(targetRepo.Name)
+		dst := repo.SkillDir(cacheDir, name)
+		fmt.Printf("Copying to repo %q...\n", targetRepo.Name)
+		if err := sync.CopySkill(devDir, dst); err != nil {
+			return err
+		}
+		fmt.Println("  ✓ Copied")
+
+		fmt.Println("Creating PR...")
+		if err := gh.Submit(cacheDir, name, cfg.GitHub.Method, cfg.GitHub.Token); err != nil {
+			return err
+		}
+
+		return nil
+	}
+	return cmd
 }
 
 // --- remove ---
@@ -402,9 +597,9 @@ func newRemoveCmd() *cobra.Command {
 			removed := 0
 
 			for tName, tPath := range targets {
-				skillDir := filepath.Join(tPath, name)
-				if _, err := os.Stat(skillDir); err == nil {
-					if err := sync.RemoveSkill(skillDir); err != nil {
+				skillPath := filepath.Join(tPath, name)
+				if _, err := os.Lstat(skillPath); err == nil {
+					if err := sync.RemoveSkill(skillPath); err != nil {
 						return fmt.Errorf("removing from %s: %w", tName, err)
 					}
 					removed++
@@ -432,7 +627,7 @@ func newRemoveCmd() *cobra.Command {
 func newDoctorCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
-		Short: "Check health: repo, tools, config",
+		Short: "Check health: repos, tools, config",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Println("Checking health...")
 			fmt.Println()
@@ -440,18 +635,21 @@ func newDoctorCmd() *cobra.Command {
 			cfg, err := loadConfig()
 			if err != nil {
 				fmt.Println("Config:  ✗ " + err.Error())
-				fmt.Println("\nRun 'myskills init' to set up.")
+				fmt.Println("\nRun 'myskills init <url>' to set up.")
 				return nil
 			}
 			fmt.Printf("Config:  ✓ %s\n", config.Path())
-			fmt.Printf("Repo:    %s\n", cfg.Repo)
+			fmt.Printf("Cache:   %s\n", config.CacheDir())
 
-			cacheDir := config.ExpandPath(cfg.CacheDir)
-			if _, err := os.Stat(cacheDir); err != nil {
-				fmt.Println("Cache:   ✗ repo not cloned")
-			} else {
-				skills, _ := repo.ListSkills(cacheDir)
-				fmt.Printf("Cache:   ✓ %s (%d skills)\n", cacheDir, len(skills))
+			fmt.Println("\nRepos:")
+			for _, r := range cfg.Repos {
+				cacheDir := config.RepoDir(r.Name)
+				if _, err := os.Stat(cacheDir); err != nil {
+					fmt.Printf("  %s: ✗ not cloned (%s)\n", r.Name, r.URL)
+				} else {
+					skills, _ := repo.ListSkills(cacheDir)
+					fmt.Printf("  %s: ✓ %d skills (%s)\n", r.Name, len(skills), r.URL)
+				}
 			}
 
 			fmt.Println("\nTargets:")
@@ -465,8 +663,19 @@ func newDoctorCmd() *cobra.Command {
 					fmt.Printf("  %s: ✓ enabled (dir will be created on sync)\n", name)
 				} else {
 					entries, _ := os.ReadDir(path)
-					fmt.Printf("  %s: ✓ enabled (%d skills installed)\n", name, len(entries))
+					symlinks := 0
+					for _, e := range entries {
+						info, err := os.Lstat(filepath.Join(path, e.Name()))
+						if err == nil && info.Mode()&os.ModeSymlink != 0 {
+							symlinks++
+						}
+					}
+					fmt.Printf("  %s: ✓ enabled (%d skills linked)\n", name, symlinks)
 				}
+			}
+
+			if len(cfg.Skills.Disabled) > 0 {
+				fmt.Printf("\nDisabled skills: %s\n", strings.Join(cfg.Skills.Disabled, ", "))
 			}
 
 			if gh.HasGH() {
@@ -497,8 +706,11 @@ func newConfigCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Printf("repo: %s\n", cfg.Repo)
-			fmt.Printf("cache_dir: %s\n", cfg.CacheDir)
+			fmt.Println("repos:")
+			for _, r := range cfg.Repos {
+				fmt.Printf("  - %s: %s\n", r.Name, r.URL)
+			}
+			fmt.Printf("cache_dir: %s\n", config.CacheDir())
 			fmt.Printf("github.method: %s\n", cfg.GitHub.Method)
 			if cfg.GitHub.Token != "" {
 				fmt.Println("github.token: [set]")
@@ -506,6 +718,9 @@ func newConfigCmd() *cobra.Command {
 			fmt.Println("\ntargets:")
 			for name, t := range cfg.Targets {
 				fmt.Printf("  %s: enabled=%v path=%s\n", name, t.Enabled, t.SkillPath)
+			}
+			if len(cfg.Skills.Disabled) > 0 {
+				fmt.Printf("\ndisabled skills: %s\n", strings.Join(cfg.Skills.Disabled, ", "))
 			}
 			return nil
 		},
@@ -524,10 +739,6 @@ func newConfigCmd() *cobra.Command {
 			key, value := args[0], args[1]
 
 			switch key {
-			case "repo":
-				cfg.Repo = value
-			case "cache_dir":
-				cfg.CacheDir = value
 			case "github.method":
 				cfg.GitHub.Method = value
 			case "github.token":
