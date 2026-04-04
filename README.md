@@ -2,13 +2,13 @@
 
 Distribute AI agent skills across your team from a central Git repo. Works with **Claude Code**, **GitHub Copilot CLI**, **OpenAI Codex CLI**, and **OpenCode**.
 
-Skills follow the open [Agent Skills](https://agentskills.io) standard — write once, use everywhere.
+Skills follow the open [Agent Skills](https://agentskills.io) standard — write once, use everywhere. Compatible with [skills.sh](https://skills.sh).
 
 ---
 
 ## 📚 Skills
 
-This repo contains shared skills for the team. Browse the [`skills/`](skills/) directory or use `myskills list` after installing.
+Browse the [`skills/`](skills/) directory or run `myskills list` after installing.
 
 | Skill | Description |
 |-------|-------------|
@@ -51,18 +51,19 @@ See [agentskills.io/specification](https://agentskills.io/specification) for the
 
 ## 🔧 myskills CLI
 
-A Go CLI tool that syncs skills from Git repos into your AI coding tools via symlinks.
+A Go CLI tool that syncs skills from Git repos into your AI coding tools via symlinks. Single binary, no runtime dependencies.
 
-### Features
+### ✨ Features
 
 - 🔗 **Symlinks** — skills point to the cached repo, always up to date after `git pull`
 - 📦 **Multi-repo** — pull skills from multiple Git repos (org, community, public)
-- ✅ **Validation** — enforces the Agent Skills spec + org-specific rules
+- 🌐 **skills.sh compatible** — `owner/repo` shorthand, same repos work everywhere
+- ✅ **Validation** — enforces the [Agent Skills](https://agentskills.io) spec + org-specific rules
 - 🎛️ **Per-skill toggle** — interactive TUI to enable/disable individual skills
 - 🔍 **Auto-detection** — finds which AI tools you have installed
-- 🖥️ **Cross-platform** — macOS, Linux, Windows binaries
+- 🖥️ **Cross-platform** — macOS, Linux, Windows (amd64 + arm64)
 
-### Install
+### 📥 Install
 
 **From GitHub Releases (recommended):**
 
@@ -70,7 +71,7 @@ A Go CLI tool that syncs skills from Git repos into your AI coding tools via sym
 curl -sSL https://raw.githubusercontent.com/jverhoeks/myskills/main/install.sh | bash
 ```
 
-**Or download manually** from [Releases](https://github.com/jverhoeks/myskills/releases/latest) — binaries for `darwin/arm64`, `darwin/amd64`, `linux/amd64`, `linux/arm64`, `windows/amd64`, `windows/arm64`.
+**Or download manually** from [Releases](https://github.com/jverhoeks/myskills/releases/latest).
 
 **From source:**
 
@@ -78,75 +79,76 @@ curl -sSL https://raw.githubusercontent.com/jverhoeks/myskills/main/install.sh |
 go install github.com/jverhoeks/myskills/cmd/myskills@latest
 ```
 
-### Quick start
+### 🚀 Quick start
 
 ```bash
-# Set up with this repo
-myskills init https://github.com/jverhoeks/myskills.git org
+# Set up with this repo (owner/repo shorthand works everywhere)
+myskills init jverhoeks/myskills
+
+# Add skills from skills.sh
+myskills add-skill vercel-labs/agent-skills
 
 # Sync all enabled skills to your tools
 myskills sync
 
 # See what's installed
 myskills list
+# REPO           SKILL                        ENABLED  STATUS   SYNCED
+# myskills       dependency-bloat-reduction    yes      current  2026-04-04 14:30
+# agent-skills   react-best-practices         yes      current  2026-04-04 14:30
 ```
 
-### Commands
+### 📋 Commands
 
 | Command | Description |
 |---------|-------------|
 | `myskills init <url\|owner/repo> [name]` | 🚀 Set up with a repo, detect tools, write config |
 | `myskills add-repo <url\|owner/repo> [name]` | ➕ Add another skill repository |
-| `myskills add-skill <owner/repo>` | 🌐 Add a skill from [skills.sh](https://skills.sh) / GitHub |
+| `myskills add-skill <owner/repo>` | 🌐 Add skills from [skills.sh](https://skills.sh) / GitHub |
 | `myskills sync [skill]` | 🔄 Pull latest and symlink skills to tool directories |
 | `myskills list` | 📋 List skills with enabled/synced status |
-| `myskills info <name>` | ℹ️ Show skill details |
+| `myskills info <name>` | ℹ️ Show skill details and files |
 | `myskills enable` | 🎛️ Interactive TUI to toggle skills on/off |
 | `myskills validate <path>` | ✅ Validate a skill against spec + org rules |
 | `myskills dev <name>` | 🆕 Scaffold a new skill |
-| `myskills submit <name>` | 📤 Validate and open a PR |
+| `myskills submit <name> [--repo name]` | 📤 Validate and open a PR |
 | `myskills remove <name>` | 🗑️ Remove a skill from all tool directories |
 | `myskills doctor` | 🩺 Health check: repos, tools, config |
-| `myskills config list` | ⚙️ Show current config |
-| `myskills config set <key> <val>` | ⚙️ Set a config value |
+| `myskills config list` | ⚙️ Show current configuration |
+| `myskills config set <key> <val>` | ⚙️ Update a config value |
 
 ### 🌐 skills.sh compatibility
 
 Add any skill from [skills.sh](https://skills.sh) using `owner/repo` shorthand — the same repos that work with `npx skills add` work here:
 
 ```bash
-# Add Vercel's agent skills
 myskills add-skill vercel-labs/agent-skills
-
-# Add Microsoft's skills
 myskills add-skill microsoft/skills
-
-# Sync to install them
+myskills add-skill anthropics/courses
 myskills sync
 ```
 
-Skills are auto-discovered in `skills/`, `.agents/skills/`, `.claude/skills/`, `.github/skills/`, or as a root `SKILL.md`.
+Skills are auto-discovered in these directories (matching the agentskills.io convention):
+- `skills/` · `.agents/skills/` · `.claude/skills/` · `.github/skills/` · `.copilot/skills/` · `.cursor/skills/`
+- Or a single `SKILL.md` at the repo root
 
-### Multi-repo setup
+### 📦 Multi-repo setup
 
 ```bash
-# All commands accept owner/repo shorthand
-myskills add-repo my-org/community-skills
+# Your org's private skills
+myskills init git@github.com:my-org/skills.git org
+
+# Add public skill collections
+myskills add-skill vercel-labs/agent-skills
+myskills add-repo my-org/team-specific-skills
 
 # Sync pulls from all repos
 myskills sync
-
-# Skills show their source repo
-myskills list
-# REPO        SKILL                        ENABLED  STATUS   SYNCED
-# org         dependency-bloat-reduction    yes      current  2026-04-04 14:30
-# community   frontend-patterns            yes      current  2026-04-04 14:30
 ```
 
-### Enable/disable skills
+### 🎛️ Enable/disable skills
 
 ```bash
-# Interactive picker
 myskills enable
 ```
 
@@ -154,30 +156,42 @@ myskills enable
   Select skills to enable
 
 > [x] dependency-bloat-reduction — Analyze imports, identify trivial/outdated...
-  [x] frontend-patterns — Common React patterns for the team
+  [x] react-best-practices — React patterns and best practices
   [ ] experimental-thing — Work in progress, not ready yet
 
   space: toggle  a: toggle all  enter/q: save  esc: cancel
 ```
 
-### Supported tools
+Disabled skills are removed from your tool directories on the next `myskills sync`.
 
-| Tool | Detected by | Skills path |
-|------|-------------|-------------|
+### 🔌 Supported tools
+
+| Tool | Detected by | Skills synced to |
+|------|-------------|-----------------|
 | 🟣 Claude Code | `~/.claude/` | `~/.claude/skills/` |
 | 🐙 GitHub Copilot CLI | `~/.copilot/` | `~/.copilot/skills/` |
 | 🟢 OpenAI Codex CLI | `~/.codex/` | `~/.codex/skills/` |
 | 🔵 OpenCode | `~/.config/opencode/` | `~/.config/opencode/skills/` |
 
-### Config
+### ⚙️ Configuration
 
-Config lives at `~/.config/myskills/config.yaml`. Cache at `~/.cache/myskills/`.
+| What | macOS / Linux | Windows |
+|------|---------------|---------|
+| Config | `~/.config/myskills/config.yaml` | `%APPDATA%\myskills\config.yaml` |
+| Cache | `~/.cache/myskills/repos/` | `%LOCALAPPDATA%\myskills\cache\repos\` |
 
-On Windows: `%APPDATA%\myskills\` for config, `%LOCALAPPDATA%\myskills\cache\` for cache.
+Respects `XDG_CONFIG_HOME` and `XDG_CACHE_HOME`.
 
-### Authentication
+### 🔐 Authentication
 
-For private repos, use SSH keys or set `GITHUB_TOKEN` / `GITLAB_TOKEN` — git and `gh` pick them up automatically. No tokens stored in config files.
+For private repos, use SSH keys or set environment variables — git and `gh` pick them up automatically:
+
+```bash
+export GITHUB_TOKEN=ghp_...    # GitHub
+export GITLAB_TOKEN=glpat-...  # GitLab
+```
+
+No tokens are stored in config files.
 
 ---
 
