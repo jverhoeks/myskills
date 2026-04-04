@@ -13,10 +13,10 @@ func TestCloneAndPull(t *testing.T) {
 	}
 
 	remote := t.TempDir()
-	run(t, remote, "git", "init", "--bare")
+	run(t, remote, "git", "init", "--bare", "--initial-branch=main")
 
 	work := t.TempDir()
-	run(t, work, "git", "init")
+	run(t, work, "git", "init", "--initial-branch=main")
 	run(t, work, "git", "config", "user.email", "test@test.com")
 	run(t, work, "git", "config", "user.name", "Test")
 
