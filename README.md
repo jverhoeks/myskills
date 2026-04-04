@@ -95,8 +95,9 @@ myskills list
 
 | Command | Description |
 |---------|-------------|
-| `myskills init <url> [name]` | 🚀 Set up with a repo, detect tools, write config |
-| `myskills add-repo <url> <name>` | ➕ Add another skill repository |
+| `myskills init <url\|owner/repo> [name]` | 🚀 Set up with a repo, detect tools, write config |
+| `myskills add-repo <url\|owner/repo> [name]` | ➕ Add another skill repository |
+| `myskills add-skill <owner/repo>` | 🌐 Add a skill from [skills.sh](https://skills.sh) / GitHub |
 | `myskills sync [skill]` | 🔄 Pull latest and symlink skills to tool directories |
 | `myskills list` | 📋 List skills with enabled/synced status |
 | `myskills info <name>` | ℹ️ Show skill details |
@@ -109,11 +110,28 @@ myskills list
 | `myskills config list` | ⚙️ Show current config |
 | `myskills config set <key> <val>` | ⚙️ Set a config value |
 
+### 🌐 skills.sh compatibility
+
+Add any skill from [skills.sh](https://skills.sh) using `owner/repo` shorthand — the same repos that work with `npx skills add` work here:
+
+```bash
+# Add Vercel's agent skills
+myskills add-skill vercel-labs/agent-skills
+
+# Add Microsoft's skills
+myskills add-skill microsoft/skills
+
+# Sync to install them
+myskills sync
+```
+
+Skills are auto-discovered in `skills/`, `.agents/skills/`, `.claude/skills/`, `.github/skills/`, or as a root `SKILL.md`.
+
 ### Multi-repo setup
 
 ```bash
-# Add a second skills repo
-myskills add-repo https://github.com/my-org/community-skills.git community
+# All commands accept owner/repo shorthand
+myskills add-repo my-org/community-skills
 
 # Sync pulls from all repos
 myskills sync

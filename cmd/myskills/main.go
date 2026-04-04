@@ -34,6 +34,7 @@ func main() {
 	root.AddCommand(
 		newInitCmd(),
 		newAddRepoCmd(),
+		newAddSkillCmd(),
 		newSyncCmd(),
 		newListCmd(),
 		newInfoCmd(),
@@ -89,12 +90,12 @@ func repoSkillFilter(cfg config.Config, repoName string) func(string) bool {
 
 func newInitCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "init <repo-url> [name]",
+		Use:   "init <repo-url|owner/repo> [name]",
 		Short: "Set up myskills with a repo, detect tools, write config",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repoURL := args[0]
-			repoName := "default"
+			repoURL := repo.ResolveURL(args[0])
+			repoName := repo.NameFromURL(args[0])
 			if len(args) == 2 {
 				repoName = args[1]
 			}
@@ -151,16 +152,20 @@ func newInitCmd() *cobra.Command {
 
 func newAddRepoCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "add-repo <url> <name>",
+		Use:   "add-repo <url|owner/repo> [name]",
 		Short: "Add another skill repository",
-		Args:  cobra.ExactArgs(2),
+		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
 				return fmt.Errorf("load config: %w (run 'myskills init' first)", err)
 			}
 
-			repoURL, repoName := args[0], args[1]
+			repoURL := repo.ResolveURL(args[0])
+			repoName := repo.NameFromURL(args[0])
+			if len(args) == 2 {
+				repoName = args[1]
+			}
 
 			// Check for duplicate names
 			for _, r := range cfg.Repos {
@@ -184,6 +189,67 @@ func newAddRepoCmd() *cobra.Command {
 				return err
 			}
 			fmt.Printf("✓ Added repo %q. Run 'myskills sync' to install skills.\n", repoName)
+			return nil
+		},
+	}
+}
+
+// --- add-skill (skills.sh compatible) ---
+
+func newAddSkillCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "add-skill <owner/repo>",
+		Short: "Add a skill from skills.sh / GitHub (owner/repo shorthand)",
+		Long: `Add a skill from any GitHub repository using owner/repo shorthand.
+Compatible with skills.sh — same repos that work with "npx skills add" work here.
+
+Examples:
+  myskills add-skill vercel-labs/agent-skills
+  myskills add-skill anthropics/courses
+  myskills add-skill microsoft/skills`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return fmt.Errorf("load config: %w (run 'myskills init' first)", err)
+			}
+
+			input := args[0]
+			repoURL := repo.ResolveURL(input)
+			repoName := repo.NameFromURL(input)
+
+			// Check for duplicate
+			for _, r := range cfg.Repos {
+				if r.Name == repoName {
+					return fmt.Errorf("repo %q already exists — run 'myskills sync' to update it", repoName)
+				}
+			}
+
+			cacheDir := config.RepoDir(repoName)
+			fmt.Printf("Adding %s...\n", input)
+			if err := os.MkdirAll(filepath.Dir(cacheDir), 0o755); err != nil {
+				return fmt.Errorf("creating cache dir: %w", err)
+			}
+			if err := repo.Clone(repoURL, cacheDir); err != nil {
+				return err
+			}
+
+			// Discover skills
+			skills, _ := repo.ListSkills(cacheDir)
+			if len(skills) == 0 {
+				fmt.Printf("  ⚠ No skills found in %s\n", input)
+				fmt.Println("  Checked: skills/, .agents/skills/, .claude/skills/, .github/skills/, and root SKILL.md")
+				return nil
+			}
+
+			cfg.Repos = append(cfg.Repos, config.Repo{Name: repoName, URL: repoURL})
+			if err := config.Save(cfg, config.Path()); err != nil {
+				return err
+			}
+
+			fmt.Printf("  ✓ Found %d skill(s): %s\n", len(skills), strings.Join(skills, ", "))
+			fmt.Printf("  ✓ Added repo %q\n", repoName)
+			fmt.Println("\nRun 'myskills sync' to link skills to your tools.")
 			return nil
 		},
 	}
@@ -225,14 +291,20 @@ func newSyncCmd() *cobra.Command {
 						fmt.Printf("[%s] %s is disabled — run 'myskills enable'\n", r.Name, name)
 						continue
 					}
-					if err := sync.One(cacheDir, name, targets); err != nil {
-						// Skill might not exist in this repo, try the next
+					skillDir := repo.SkillDir(cacheDir, name)
+					if err := sync.One(skillDir, name, targets); err != nil {
 						continue
 					}
 					fmt.Printf("[%s] ✓ %s linked to %s\n", r.Name, name, strings.Join(targetNames(targets), ", "))
 					totalCount++
 				} else {
-					count, err := sync.All(cacheDir, targets, repoSkillFilter(cfg, r.Name))
+					// Build skill map: name → source path
+					skillNames, _ := repo.ListSkills(cacheDir)
+					skillMap := make(map[string]string, len(skillNames))
+					for _, name := range skillNames {
+						skillMap[name] = repo.SkillDir(cacheDir, name)
+					}
+					count, err := sync.AllFromMap(skillMap, targets, repoSkillFilter(cfg, r.Name))
 					if err != nil {
 						fmt.Printf("[%s] ✗ sync failed: %v\n", r.Name, err)
 						continue
@@ -254,7 +326,7 @@ func newSyncCmd() *cobra.Command {
 				cacheDir := config.RepoDir(r.Name)
 				skills, _ := repo.ListSkills(cacheDir)
 				for _, name := range skills {
-					hash, _ := repo.CommitHashForPath(cacheDir, filepath.Join("skills", name))
+					hash, _ := repo.CommitHashForPath(cacheDir, repo.SkillDir(cacheDir, name))
 					m.Skills[name] = manifest.SkillEntry{
 						Commit:   hash,
 						SyncedAt: time.Now().UTC(),
@@ -292,7 +364,7 @@ func newListCmd() *cobra.Command {
 					continue
 				}
 				for _, name := range skills {
-					hash, _ := repo.CommitHashForPath(cacheDir, filepath.Join("skills", name))
+					hash, _ := repo.CommitHashForPath(cacheDir, repo.SkillDir(cacheDir, name))
 					enabled := "yes"
 					if cfg.IsSkillDisabledInRepo(r.Name, name) {
 						enabled = "no"
