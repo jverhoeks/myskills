@@ -24,8 +24,7 @@ type Repo struct {
 }
 
 type GitHubConfig struct {
-	Method string `yaml:"method"`
-	Token  string `yaml:"token,omitempty"`
+	Method string `yaml:"method"` // "gh" (default) or "token" (reads GITHUB_TOKEN env)
 }
 
 type Target struct {

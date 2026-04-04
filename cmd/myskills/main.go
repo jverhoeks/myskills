@@ -8,16 +8,16 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/sbp/myskills/internal/config"
-	"github.com/sbp/myskills/internal/detect"
-	"github.com/sbp/myskills/internal/dev"
-	gh "github.com/sbp/myskills/internal/github"
-	"github.com/sbp/myskills/internal/manifest"
-	"github.com/sbp/myskills/internal/repo"
-	"github.com/sbp/myskills/internal/skill"
-	"github.com/sbp/myskills/internal/sync"
-	"github.com/sbp/myskills/internal/tui"
-	"github.com/sbp/myskills/internal/validate"
+	"github.com/jverhoeks/myskills/internal/config"
+	"github.com/jverhoeks/myskills/internal/detect"
+	"github.com/jverhoeks/myskills/internal/dev"
+	gh "github.com/jverhoeks/myskills/internal/github"
+	"github.com/jverhoeks/myskills/internal/manifest"
+	"github.com/jverhoeks/myskills/internal/repo"
+	"github.com/jverhoeks/myskills/internal/skill"
+	"github.com/jverhoeks/myskills/internal/sync"
+	"github.com/jverhoeks/myskills/internal/tui"
+	"github.com/jverhoeks/myskills/internal/validate"
 
 	"github.com/spf13/cobra"
 )
@@ -570,7 +570,7 @@ func newSubmitCmd() *cobra.Command {
 		fmt.Println("  ✓ Copied")
 
 		fmt.Println("Creating PR...")
-		if err := gh.Submit(cacheDir, name, cfg.GitHub.Method, cfg.GitHub.Token); err != nil {
+		if err := gh.Submit(cacheDir, name, cfg.GitHub.Method); err != nil {
 			return err
 		}
 
@@ -678,10 +678,16 @@ func newDoctorCmd() *cobra.Command {
 				fmt.Printf("\nDisabled skills: %s\n", strings.Join(cfg.Skills.Disabled, ", "))
 			}
 
+			fmt.Println()
 			if gh.HasGH() {
-				fmt.Println("\ngh CLI: ✓ available")
+				fmt.Println("gh CLI:      ✓ available")
 			} else {
-				fmt.Println("\ngh CLI: ✗ not found (submit will use token or manual mode)")
+				fmt.Println("gh CLI:      ✗ not found")
+			}
+			if gh.HasToken() {
+				fmt.Println("GITHUB_TOKEN: ✓ set")
+			} else {
+				fmt.Println("GITHUB_TOKEN: not set")
 			}
 
 			return nil
@@ -712,9 +718,6 @@ func newConfigCmd() *cobra.Command {
 			}
 			fmt.Printf("cache_dir: %s\n", config.CacheDir())
 			fmt.Printf("github.method: %s\n", cfg.GitHub.Method)
-			if cfg.GitHub.Token != "" {
-				fmt.Println("github.token: [set]")
-			}
 			fmt.Println("\ntargets:")
 			for name, t := range cfg.Targets {
 				fmt.Printf("  %s: enabled=%v path=%s\n", name, t.Enabled, t.SkillPath)
@@ -741,8 +744,6 @@ func newConfigCmd() *cobra.Command {
 			switch key {
 			case "github.method":
 				cfg.GitHub.Method = value
-			case "github.token":
-				cfg.GitHub.Token = value
 			default:
 				parts := strings.SplitN(key, ".", 3)
 				if len(parts) == 3 && parts[0] == "targets" {

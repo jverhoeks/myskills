@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sbp/myskills/internal/skill"
+	"github.com/jverhoeks/myskills/internal/skill"
 	"gopkg.in/yaml.v3"
 )
 

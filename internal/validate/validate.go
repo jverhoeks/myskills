@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/sbp/myskills/internal/skill"
+	"github.com/jverhoeks/myskills/internal/skill"
 )
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)

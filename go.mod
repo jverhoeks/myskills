@@ -1,4 +1,4 @@
-module github.com/sbp/myskills
+module github.com/jverhoeks/myskills
 
 go 1.25.0
 

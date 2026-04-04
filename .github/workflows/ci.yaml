@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go test ./... -v
+      - run: go build -o myskills ./cmd/myskills
+
+  validate-skills:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go build -o myskills ./cmd/myskills
+      - name: Validate changed skills
+        run: |
+          CHANGED=$(git diff --name-only origin/main... | grep '^skills/' | cut -d/ -f1-2 | sort -u || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No skills changed"
+            exit 0
+          fi
+          for dir in $CHANGED; do
+            echo "Validating $dir..."
+            ./myskills validate "$dir"
+          done

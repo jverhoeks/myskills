@@ -12,6 +12,11 @@ func HasGH() bool {
 	return err == nil
 }
 
+// HasToken returns true if GITHUB_TOKEN or GITLAB_TOKEN is set.
+func HasToken() bool {
+	return os.Getenv("GITHUB_TOKEN") != "" || os.Getenv("GITLAB_TOKEN") != ""
+}
+
 // CreateBranch creates and checks out a new branch in the given repo directory.
 func CreateBranch(repoDir, branch string) error {
 	cmd := exec.Command("git", "checkout", "-b", branch)
@@ -66,7 +71,9 @@ func OpenPRWithGH(repoDir, title, body string) (string, error) {
 }
 
 // Submit handles the full submit workflow: branch, commit, push, PR.
-func Submit(repoDir, name, ghMethod, token string) error {
+// Auth: gh CLI uses its own auth. For git push, GITHUB_TOKEN/GITLAB_TOKEN
+// env vars are picked up by git's credential helper automatically.
+func Submit(repoDir, name, method string) error {
 	branch := "skill/" + name
 
 	if err := CreateBranch(repoDir, branch); err != nil {
@@ -84,7 +91,7 @@ func Submit(repoDir, name, ghMethod, token string) error {
 	title := fmt.Sprintf("Add skill: %s", name)
 	body := fmt.Sprintf("Adds the `%s` skill to the org repository.", name)
 
-	if ghMethod == "gh" && HasGH() {
+	if method == "gh" && HasGH() {
 		url, err := OpenPRWithGH(repoDir, title, body)
 		if err != nil {
 			return err
@@ -93,12 +100,6 @@ func Submit(repoDir, name, ghMethod, token string) error {
 		return nil
 	}
 
-	if token != "" {
-		fmt.Fprintf(os.Stderr, "Token-based PR creation is not yet implemented.\n")
-		fmt.Fprintf(os.Stderr, "Branch %s has been pushed. Please create the PR manually.\n", branch)
-		return nil
-	}
-
-	fmt.Printf("Branch %s pushed. Please create the PR manually on GitHub.\n", branch)
+	fmt.Printf("Branch %s pushed. Create the PR manually on GitHub.\n", branch)
 	return nil
 }
