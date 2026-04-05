@@ -29,6 +29,12 @@ trap "rm -rf $TMP" EXIT
 curl -sL "$URL" -o "${TMP}/${FILENAME}"
 tar -xzf "${TMP}/${FILENAME}" -C "$TMP"
 
+# Install — use sudo if needed
 echo "Installing to ${INSTALL_DIR}/myskills..."
-install -m 755 "${TMP}/myskills" "${INSTALL_DIR}/myskills"
+if [ -w "$INSTALL_DIR" ]; then
+  install -m 755 "${TMP}/myskills" "${INSTALL_DIR}/myskills"
+else
+  echo "  (requires sudo)"
+  sudo install -m 755 "${TMP}/myskills" "${INSTALL_DIR}/myskills"
+fi
 echo "✓ myskills ${LATEST} installed"

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -44,6 +45,7 @@ func main() {
 		newDevCmd(),
 		newSubmitCmd(),
 		newRemoveCmd(),
+		newUpdateCmd(),
 		newDoctorCmd(),
 		newConfigCmd(),
 	)
@@ -766,6 +768,71 @@ func newRemoveCmd() *cobra.Command {
 			delete(m.Skills, name)
 			manifest.Save(m, mPath)
 
+			return nil
+		},
+	}
+}
+
+// --- update ---
+
+const releaseRepo = "jverhoeks/myskills"
+
+func newUpdateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "update",
+		Short: "Check for newer version and show upgrade instructions",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Printf("Current version: %s\n", version)
+			fmt.Println("Checking for updates...")
+
+			// Try gh first, fall back to curl
+			var latest string
+			if gh.HasGH() {
+				out, err := exec.Command("gh", "release", "view", "--repo", releaseRepo, "--json", "tagName", "-q", ".tagName").Output()
+				if err == nil {
+					latest = strings.TrimSpace(string(out))
+				}
+			}
+
+			if latest == "" {
+				out, err := exec.Command("curl", "-sL", fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", releaseRepo)).Output()
+				if err != nil {
+					return fmt.Errorf("failed to check for updates: %w", err)
+				}
+				// Simple JSON parse for tag_name
+				for _, line := range strings.Split(string(out), "\n") {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, `"tag_name"`) {
+						parts := strings.SplitN(line, `"`, 5)
+						if len(parts) >= 4 {
+							latest = parts[3]
+						}
+					}
+				}
+			}
+
+			if latest == "" {
+				return fmt.Errorf("could not determine latest version")
+			}
+
+			latestClean := strings.TrimPrefix(latest, "v")
+			currentClean := strings.TrimPrefix(version, "v")
+
+			if currentClean == latestClean {
+				fmt.Printf("✓ You're up to date (%s)\n", latest)
+				return nil
+			}
+
+			if currentClean == "dev" {
+				fmt.Printf("Latest release: %s (you're running a dev build)\n", latest)
+			} else {
+				fmt.Printf("New version available: %s → %s\n", version, latest)
+			}
+
+			fmt.Println("\nUpgrade with:")
+			fmt.Printf("  curl -sSL https://raw.githubusercontent.com/%s/main/install.sh | bash\n", releaseRepo)
+			fmt.Println("\nOr download from:")
+			fmt.Printf("  https://github.com/%s/releases/tag/%s\n", releaseRepo, latest)
 			return nil
 		},
 	}
