@@ -24,7 +24,7 @@ Skills are automatically available in your AI coding tool after syncing. Invoke 
 
 Or let your AI agent pick them up automatically when the task matches the skill's description.
 
-### Contributing a skill
+### ✍️ Contributing a skill via CLI
 
 ```bash
 # Scaffold a new skill
@@ -40,12 +40,60 @@ myskills validate ~/.config/myskills/dev/my-new-skill
 myskills submit my-new-skill
 ```
 
-Every skill needs:
-- A `name` matching the directory name (lowercase, hyphens)
-- A `description` (50+ chars)
-- A `metadata.team` field
+### ✍️ Adding a skill manually to your repo
 
-See [agentskills.io/specification](https://agentskills.io/specification) for the full spec.
+You can also add skills directly to your repo without the CLI. Just create a directory under `skills/` with a `SKILL.md` file:
+
+```
+skills/
+└── my-new-skill/
+    ├── SKILL.md           # Required: frontmatter + instructions
+    ├── references/        # Optional: extra docs loaded on demand
+    └── scripts/           # Optional: scripts the agent can run
+```
+
+The `SKILL.md` file needs YAML frontmatter followed by markdown instructions:
+
+```yaml
+---
+name: my-new-skill
+description: What this skill does and when to use it. Be specific so agents
+  know when to activate it. At least 50 characters.
+metadata:
+  team: platform
+---
+
+# Instructions for the agent
+
+Step-by-step instructions, examples, rules, templates — whatever helps
+the agent do the job well.
+
+## Optional sections
+
+- Reference supporting files: [see details](references/api-docs.md)
+- Run scripts: `scripts/helper.sh`
+- Include examples, edge cases, constraints
+```
+
+**Rules for the frontmatter:**
+- `name` — must match the directory name, lowercase with hyphens, max 64 chars
+- `description` — what and when, 50–1024 chars (this is what agents see to decide if the skill is relevant)
+- `metadata.team` — required by org validation rules
+
+**Optional frontmatter fields** (from the [Agent Skills spec](https://agentskills.io/specification)):
+- `license` — e.g., `Apache-2.0`
+- `compatibility` — e.g., `Requires Python 3.10+ and Docker`
+- `metadata` — any extra key-value pairs
+
+Then commit and push (or open a PR):
+
+```bash
+git add skills/my-new-skill/
+git commit -m "feat: add my-new-skill"
+git push
+```
+
+After pushing, anyone on the team runs `myskills sync` to get the new skill.
 
 ---
 
@@ -82,20 +130,25 @@ go install github.com/jverhoeks/myskills/cmd/myskills@latest
 ### 🚀 Quick start
 
 ```bash
-# Set up with this repo (owner/repo shorthand works everywhere)
+# 1. Set up with your org's skills repo
 myskills init jverhoeks/myskills
 
-# Add skills from skills.sh
+# 2. Add public skills from skills.sh
 myskills add-skill vercel-labs/agent-skills
+myskills add-skill microsoft/skills
 
-# Sync all enabled skills to your tools
+# 3. Sync all enabled skills to your AI tools
 myskills sync
 
-# See what's installed
+# 4. See what's installed
 myskills list
 # REPO           SKILL                        ENABLED  STATUS   SYNCED
 # myskills       dependency-bloat-reduction    yes      current  2026-04-04 14:30
 # agent-skills   react-best-practices         yes      current  2026-04-04 14:30
+# skills         azure-development            yes      current  2026-04-04 14:30
+
+# 5. Toggle individual skills on/off
+myskills enable
 ```
 
 ### 📋 Commands
