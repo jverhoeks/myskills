@@ -8,5 +8,6 @@ validation:
     - infra
     - frontend
     - data
+    - data-ai
   name_prefix: ""
   max_skill_md_lines: 500

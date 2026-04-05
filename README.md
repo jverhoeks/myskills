@@ -13,6 +13,9 @@ Browse the [`skills/`](skills/) directory or run `myskills list` after installin
 | Skill | Description |
 |-------|-------------|
 | 🧹 [dependency-bloat-reduction](skills/dependency-bloat-reduction/) | Analyze imports, identify trivial/outdated packages, inline or replace with native code |
+| 🤖 [reviewing-multi-agent-architecture](skills/reviewing-multi-agent-architecture/) | Review multi-agent systems against a three-layer reference architecture (guardian, orchestration, worker) |
+| 📖 [authoring-ebooks-with-pandoc](skills/authoring-ebooks-with-pandoc/) | End-to-end ebook authoring from Markdown via Pandoc to PDF, EPUB, and HTML with diagrams |
+| 🎙️ [extracting-tone-of-voice](skills/extracting-tone-of-voice/) | Analyze writing samples to extract a structured, reusable tone-of-voice profile |
 
 ### Using a skill
 

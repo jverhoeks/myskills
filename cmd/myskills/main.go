@@ -603,14 +603,21 @@ func newValidateCmd() *cobra.Command {
 
 			errs := validate.Spec(path)
 
-			// Try to load org rules from each cached repo
-			cfg, cfgErr := loadConfig()
-			if cfgErr == nil {
-				for _, r := range cfg.Repos {
-					rulesPath := filepath.Join(config.RepoDir(r.Name), ".myskills.yaml")
-					if rules, err := validate.LoadOrgRules(rulesPath); err == nil {
-						errs = append(errs, validate.Org(path, rules)...)
-						break // Use first repo's rules
+			// Try to load org rules: check current dir first, then cached repos
+			orgRulesLoaded := false
+			if rules, err := validate.LoadOrgRules(".myskills.yaml"); err == nil {
+				errs = append(errs, validate.Org(path, rules)...)
+				orgRulesLoaded = true
+			}
+			if !orgRulesLoaded {
+				cfg, cfgErr := loadConfig()
+				if cfgErr == nil {
+					for _, r := range cfg.Repos {
+						rulesPath := filepath.Join(config.RepoDir(r.Name), ".myskills.yaml")
+						if rules, err := validate.LoadOrgRules(rulesPath); err == nil {
+							errs = append(errs, validate.Org(path, rules)...)
+							break
+						}
 					}
 				}
 			}
