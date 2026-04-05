@@ -165,6 +165,7 @@ myskills enable
 | `myskills list` | 📋 List skills with enabled/synced status |
 | `myskills info <name>` | ℹ️ Show skill details and files |
 | `myskills search <query>` | 🔎 Search skills by name or description |
+| `myskills browse` | 🌍 Browse skills.sh repos and add interactively |
 | `myskills enable` | 🎛️ Interactive TUI to toggle skills on/off |
 | `myskills validate <path>` | ✅ Validate a skill against spec + org rules |
 | `myskills dev <name>` | 🆕 Scaffold a new skill |
@@ -182,7 +183,25 @@ Add any skill from [skills.sh](https://skills.sh) using `owner/repo` shorthand �
 myskills add-skill vercel-labs/agent-skills
 myskills add-skill microsoft/skills
 myskills add-skill anthropics/courses
-myskills sync
+myskills enable --sync
+```
+
+Or **browse the full skills.sh directory** interactively:
+
+```bash
+myskills browse
+```
+
+```
+  Browse skills.sh repos (2 selected)
+
+  filter: micro  (3 matching)
+
+> [x] microsoft/github-copilot-for-azure (20 skills)
+  [x] microsoft/azure-skills (19 skills)
+  [ ] microsoft/playwright-cli (1 skills)
+
+  space: select  type: filter  ctrl+u: clear  enter: add selected  esc: cancel
 ```
 
 Skills are auto-discovered in these directories (matching the agentskills.io convention):

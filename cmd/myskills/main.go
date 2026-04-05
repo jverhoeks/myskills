@@ -9,6 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/jverhoeks/myskills/internal/browse"
 	"github.com/jverhoeks/myskills/internal/config"
 	"github.com/jverhoeks/myskills/internal/detect"
 	"github.com/jverhoeks/myskills/internal/dev"
@@ -42,6 +43,7 @@ func main() {
 		newValidateCmd(),
 		newEnableCmd(),
 		newSearchCmd(),
+		newBrowseCmd(),
 		newDevCmd(),
 		newSubmitCmd(),
 		newRemoveCmd(),
@@ -621,6 +623,115 @@ func newSearchCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// --- browse ---
+
+func newBrowseCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "browse",
+		Short: "Browse skills.sh repos and add them interactively",
+	}
+	doSync := cmd.Flags().BoolP("sync", "s", false, "Sync after adding repos")
+
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		cfg, err := loadConfig()
+		if err != nil {
+			return fmt.Errorf("load config: %w (run 'myskills init' first)", err)
+		}
+
+		fmt.Println("Fetching skills.sh leaderboard...")
+		repos, err := browse.FetchLeaderboard()
+		if err != nil {
+			return fmt.Errorf("fetching leaderboard: %w", err)
+		}
+
+		if len(repos) == 0 {
+			return fmt.Errorf("no repos found on skills.sh")
+		}
+
+		// Build existing repo set
+		existing := make(map[string]bool)
+		for _, r := range cfg.Repos {
+			// Normalize: check both the name and try to match owner/repo from URL
+			existing[r.Name] = true
+			existing[r.URL] = true
+		}
+
+		// Build picker items
+		var items []tui.RepoItem
+		for _, r := range repos {
+			alreadyAdded := existing[r.Repo] ||
+				existing[r.OwnerRepo()] ||
+				existing["https://github.com/"+r.OwnerRepo()+".git"]
+			items = append(items, tui.RepoItem{
+				OwnerRepo:    r.OwnerRepo(),
+				SkillCount:   r.SkillCount,
+				Selected:     false,
+				AlreadyAdded: alreadyAdded,
+			})
+		}
+
+		fmt.Printf("Found %d repos on skills.sh\n\n", len(items))
+
+		selected, err := tui.RunRepoPicker(items)
+		if err != nil {
+			return err
+		}
+
+		if len(selected) == 0 {
+			fmt.Println("No repos selected.")
+			return nil
+		}
+
+		// Clone and add each selected repo
+		for _, item := range selected {
+			repoURL := repo.ResolveURL(item.OwnerRepo)
+			repoName := repo.NameFromURL(item.OwnerRepo)
+
+			// Skip if already exists
+			duplicate := false
+			for _, r := range cfg.Repos {
+				if r.Name == repoName {
+					fmt.Printf("[%s] already exists, skipping\n", repoName)
+					duplicate = true
+					break
+				}
+			}
+			if duplicate {
+				continue
+			}
+
+			cacheDir := config.RepoDir(repoName)
+			fmt.Printf("[%s] Cloning...\n", item.OwnerRepo)
+			if err := os.MkdirAll(filepath.Dir(cacheDir), 0o755); err != nil {
+				fmt.Printf("[%s] ✗ %v\n", repoName, err)
+				continue
+			}
+			if err := repo.Clone(repoURL, cacheDir); err != nil {
+				fmt.Printf("[%s] ✗ clone failed: %v\n", repoName, err)
+				continue
+			}
+
+			skills, _ := repo.ListSkills(cacheDir)
+			cfg.Repos = append(cfg.Repos, config.Repo{Name: repoName, URL: repoURL})
+			fmt.Printf("[%s] ✓ added (%d skills)\n", repoName, len(skills))
+		}
+
+		if err := config.Save(cfg, config.Path()); err != nil {
+			return err
+		}
+
+		fmt.Printf("\n✓ %d repo(s) added. Run 'myskills enable --sync' to pick skills.\n", len(selected))
+
+		if *doSync {
+			fmt.Println("\nSyncing...")
+			return runSync(cfg)
+		}
+
+		return nil
+	}
+	return cmd
 }
 
 // --- validate ---
