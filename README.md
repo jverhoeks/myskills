@@ -132,26 +132,28 @@ go install github.com/jverhoeks/myskills/cmd/myskills@latest
 
 ### 🚀 Quick start
 
+**All-in-one setup** (recommended):
+
+```bash
+myskills ui
+```
+
+This walks you through: **add repos → browse skills.sh → pick skills → sync**. One command, done.
+
+**Or step by step:**
+
 ```bash
 # 1. Set up with your org's skills repo
 myskills init jverhoeks/myskills
 
-# 2. Add public skills from skills.sh
-myskills add-skill vercel-labs/agent-skills
-myskills add-skill microsoft/skills
+# 2. Browse and add public skills from skills.sh
+myskills browse
 
-# 3. Sync all enabled skills to your AI tools
-myskills sync
+# 3. Pick which skills to enable and sync
+myskills enable --sync
 
 # 4. See what's installed
 myskills list
-# REPO           SKILL                        ENABLED  STATUS   SYNCED
-# myskills       dependency-bloat-reduction    yes      current  2026-04-04 14:30
-# agent-skills   react-best-practices         yes      current  2026-04-04 14:30
-# skills         azure-development            yes      current  2026-04-04 14:30
-
-# 5. Toggle individual skills on/off
-myskills enable
 ```
 
 ### 📋 Commands
@@ -166,6 +168,7 @@ myskills enable
 | `myskills info <name>` | ℹ️ Show skill details and files |
 | `myskills search <query>` | 🔎 Search skills by name or description |
 | `myskills browse` | 🌍 Browse skills.sh repos and add interactively |
+| `myskills ui` | 🧙 All-in-one setup: add repos → pick skills → sync |
 | `myskills enable` | 🎛️ Interactive TUI to toggle skills on/off |
 | `myskills validate <path>` | ✅ Validate a skill against spec + org rules |
 | `myskills dev <name>` | 🆕 Scaffold a new skill |

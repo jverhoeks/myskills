@@ -44,6 +44,7 @@ func main() {
 		newEnableCmd(),
 		newSearchCmd(),
 		newBrowseCmd(),
+		newUICmd(),
 		newDevCmd(),
 		newSubmitCmd(),
 		newRemoveCmd(),
@@ -732,6 +733,222 @@ func newBrowseCmd() *cobra.Command {
 		return nil
 	}
 	return cmd
+}
+
+// --- ui (unified wizard) ---
+
+func newUICmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "ui",
+		Short: "Interactive setup: add repos, pick skills, sync — all in one",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				// No config yet — start fresh
+				cfg = config.Default()
+			}
+
+			// ─── Step 1: Repos ───
+			var existing []tui.WizardRepo
+			for _, r := range cfg.Repos {
+				existing = append(existing, tui.WizardRepo{Name: r.Name, URL: r.URL})
+			}
+
+			newRepos, wantBrowse, err := tui.RunRepoWizard(existing)
+			if err != nil {
+				return err
+			}
+
+			// Add manually-typed repos
+			for _, nr := range newRepos {
+				repoURL := repo.ResolveURL(nr.Name)
+				repoName := repo.NameFromURL(nr.Name)
+
+				// Skip duplicates
+				dup := false
+				for _, r := range cfg.Repos {
+					if r.Name == repoName {
+						dup = true
+						break
+					}
+				}
+				if dup {
+					continue
+				}
+
+				cacheDir := config.RepoDir(repoName)
+				fmt.Printf("Cloning %s...\n", nr.Name)
+				if err := os.MkdirAll(filepath.Dir(cacheDir), 0o755); err != nil {
+					fmt.Printf("  ✗ %v\n", err)
+					continue
+				}
+				if err := repo.Clone(repoURL, cacheDir); err != nil {
+					fmt.Printf("  ✗ clone failed: %v\n", err)
+					continue
+				}
+				skills, _ := repo.ListSkills(cacheDir)
+				cfg.Repos = append(cfg.Repos, config.Repo{Name: repoName, URL: repoURL})
+				fmt.Printf("  ✓ %s (%d skills)\n", repoName, len(skills))
+			}
+
+			// Browse skills.sh if requested
+			if wantBrowse {
+				fmt.Println("\nFetching skills.sh leaderboard...")
+				repos, err := browse.FetchLeaderboard()
+				if err != nil {
+					fmt.Printf("  ✗ %v\n", err)
+				} else {
+					existingSet := make(map[string]bool)
+					for _, r := range cfg.Repos {
+						existingSet[r.Name] = true
+					}
+
+					var items []tui.RepoItem
+					for _, r := range repos {
+						items = append(items, tui.RepoItem{
+							OwnerRepo:    r.OwnerRepo(),
+							SkillCount:   r.SkillCount,
+							AlreadyAdded: existingSet[r.Repo],
+						})
+					}
+
+					selected, err := tui.RunRepoPicker(items)
+					if err != nil {
+						return err
+					}
+
+					for _, item := range selected {
+						repoURL := repo.ResolveURL(item.OwnerRepo)
+						repoName := repo.NameFromURL(item.OwnerRepo)
+
+						dup := false
+						for _, r := range cfg.Repos {
+							if r.Name == repoName {
+								dup = true
+								break
+							}
+						}
+						if dup {
+							continue
+						}
+
+						cacheDir := config.RepoDir(repoName)
+						fmt.Printf("Cloning %s...\n", item.OwnerRepo)
+						if err := os.MkdirAll(filepath.Dir(cacheDir), 0o755); err != nil {
+							continue
+						}
+						if err := repo.Clone(repoURL, cacheDir); err != nil {
+							fmt.Printf("  ✗ clone failed: %v\n", err)
+							continue
+						}
+						skills, _ := repo.ListSkills(cacheDir)
+						cfg.Repos = append(cfg.Repos, config.Repo{Name: repoName, URL: repoURL})
+						fmt.Printf("  ✓ %s (%d skills)\n", repoName, len(skills))
+					}
+				}
+			}
+
+			// Save config after repo changes
+			if err := config.Save(cfg, config.Path()); err != nil {
+				return err
+			}
+
+			if len(cfg.Repos) == 0 {
+				fmt.Println("\nNo repos configured. Run 'myskills ui' again to add some.")
+				return nil
+			}
+
+			// ─── Step 2: Pull all repos ───
+			fmt.Println("\nPulling latest from all repos...")
+			for _, r := range cfg.Repos {
+				cacheDir := config.RepoDir(r.Name)
+				if err := repo.Pull(cacheDir); err != nil {
+					fmt.Printf("  [%s] ✗ %v\n", r.Name, err)
+				}
+			}
+
+			// ─── Step 3: Enable/disable skills ───
+			var items []tui.SkillItem
+			for _, r := range cfg.Repos {
+				cacheDir := config.RepoDir(r.Name)
+				skills, err := repo.ListSkills(cacheDir)
+				if err != nil {
+					continue
+				}
+				for _, name := range skills {
+					skillPath := filepath.Join(repo.SkillDir(cacheDir, name), "SKILL.md")
+					desc := ""
+					if s, err := skill.Parse(skillPath); err == nil {
+						desc = s.Description
+					}
+					qualified := r.Name + ":" + name
+					items = append(items, tui.SkillItem{
+						Name:        qualified,
+						Description: desc,
+						Enabled:     cfg.IsSkillEnabledInRepo(r.Name, name),
+					})
+				}
+			}
+
+			if len(items) > 0 {
+				fmt.Printf("\n%d skills available across %d repos\n\n", len(items), len(cfg.Repos))
+
+				result, err := tui.RunPicker(items)
+				if err != nil {
+					return err
+				}
+
+				for _, item := range result {
+					cfg.SetSkillEnabled(item.Name, item.Enabled)
+				}
+
+				if err := config.Save(cfg, config.Path()); err != nil {
+					return err
+				}
+
+				enabled := 0
+				for _, item := range result {
+					if item.Enabled {
+						enabled++
+					}
+				}
+				fmt.Printf("✓ %d/%d skills enabled\n", enabled, len(result))
+			}
+
+			// ─── Step 4: Sync ───
+			fmt.Println("\nSyncing to tools...")
+
+			// Detect tools if not configured
+			hasEnabledTarget := false
+			for _, t := range cfg.Targets {
+				if t.Enabled {
+					hasEnabledTarget = true
+					break
+				}
+			}
+			if !hasEnabledTarget {
+				detected := detect.Detect()
+				for _, name := range []string{"claude", "copilot", "codex", "opencode"} {
+					if detected[name] {
+						t := cfg.Targets[name]
+						t.Enabled = true
+						cfg.Targets[name] = t
+						fmt.Printf("  Auto-enabled %s\n", name)
+					}
+				}
+				if err := config.Save(cfg, config.Path()); err != nil {
+					return err
+				}
+			}
+
+			if err := runSync(cfg); err != nil {
+				return err
+			}
+
+			fmt.Println("\nDone! Your AI tools are ready.")
+			return nil
+		},
+	}
 }
 
 // --- validate ---
