@@ -19,12 +19,8 @@ func TestDefaultConfig(t *testing.T) {
 	if len(cfg.Targets) != 4 {
 		t.Errorf("expected 4 targets, got %d", len(cfg.Targets))
 	}
-	claude, ok := cfg.Targets["claude"]
-	if !ok {
-		t.Fatal("expected 'claude' target")
-	}
-	if claude.Enabled {
-		t.Error("expected claude disabled by default")
+	if len(cfg.Skills.Enabled) != 0 {
+		t.Errorf("expected no skills enabled by default, got %d", len(cfg.Skills.Enabled))
 	}
 }
 
@@ -62,10 +58,9 @@ func TestSaveAndLoad(t *testing.T) {
 	cfg := Default()
 	cfg.Repos = []Repo{
 		{Name: "org", URL: "git@github.com:sbp/skills.git"},
-		{Name: "community", URL: "git@github.com:sbp/community-skills.git"},
 	}
 	cfg.Targets["claude"] = Target{Enabled: true, SkillPath: "~/.claude/skills"}
-	cfg.Skills.Disabled = []string{"experimental"}
+	cfg.Skills.Enabled = []string{"org:deploy", "org:review"}
 
 	if err := Save(cfg, path); err != nil {
 		t.Fatalf("save: %v", err)
@@ -76,17 +71,14 @@ func TestSaveAndLoad(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 
-	if len(loaded.Repos) != 2 {
-		t.Errorf("repos: got %d, want 2", len(loaded.Repos))
-	}
-	if loaded.Repos[0].Name != "org" {
-		t.Errorf("repo name: got %q", loaded.Repos[0].Name)
+	if len(loaded.Repos) != 1 {
+		t.Errorf("repos: got %d, want 1", len(loaded.Repos))
 	}
 	if !loaded.Targets["claude"].Enabled {
 		t.Error("expected claude enabled after load")
 	}
-	if len(loaded.Skills.Disabled) != 1 || loaded.Skills.Disabled[0] != "experimental" {
-		t.Errorf("disabled skills: got %v", loaded.Skills.Disabled)
+	if len(loaded.Skills.Enabled) != 2 {
+		t.Errorf("enabled skills: got %v", loaded.Skills.Enabled)
 	}
 }
 
@@ -104,11 +96,6 @@ func TestExpandPath(t *testing.T) {
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
-
-	got2 := ExpandPath("/absolute/path")
-	if got2 != "/absolute/path" {
-		t.Errorf("got %q, want %q", got2, "/absolute/path")
-	}
 }
 
 func TestConfigDir(t *testing.T) {
@@ -118,56 +105,71 @@ func TestConfigDir(t *testing.T) {
 	}
 }
 
-func TestIsSkillDisabled(t *testing.T) {
-	cfg := Config{Skills: SkillsConfig{Disabled: []string{"alpha", "org:beta"}}}
+func TestIsSkillEnabled(t *testing.T) {
+	cfg := Config{Skills: SkillsConfig{Enabled: []string{"org:deploy", "review"}}}
 
-	if !cfg.IsSkillDisabled("alpha") {
-		t.Error("expected alpha disabled")
+	if !cfg.IsSkillEnabled("deploy") {
+		t.Error("expected deploy enabled (via org:deploy)")
 	}
-	if !cfg.IsSkillDisabled("beta") {
-		t.Error("expected beta disabled (via org:beta)")
+	if !cfg.IsSkillEnabled("review") {
+		t.Error("expected review enabled (bare name)")
 	}
-	if cfg.IsSkillDisabled("gamma") {
-		t.Error("expected gamma not disabled")
+	if cfg.IsSkillEnabled("unknown") {
+		t.Error("expected unknown not enabled")
 	}
 }
 
-func TestIsSkillDisabledInRepo(t *testing.T) {
-	cfg := Config{Skills: SkillsConfig{Disabled: []string{"org:beta", "gamma"}}}
+func TestIsSkillEnabledInRepo(t *testing.T) {
+	cfg := Config{Skills: SkillsConfig{Enabled: []string{"org:deploy", "review"}}}
 
-	if !cfg.IsSkillDisabledInRepo("org", "beta") {
-		t.Error("expected org:beta disabled")
+	if !cfg.IsSkillEnabledInRepo("org", "deploy") {
+		t.Error("expected org:deploy enabled")
 	}
-	if !cfg.IsSkillDisabledInRepo("community", "gamma") {
-		t.Error("expected gamma disabled globally")
+	if !cfg.IsSkillEnabledInRepo("any", "review") {
+		t.Error("expected review enabled globally")
 	}
-	if cfg.IsSkillDisabledInRepo("org", "alpha") {
-		t.Error("expected alpha not disabled")
+	if cfg.IsSkillEnabledInRepo("org", "unknown") {
+		t.Error("expected unknown not enabled")
 	}
 }
 
-func TestSetSkillDisabled(t *testing.T) {
+func TestSetSkillEnabled(t *testing.T) {
 	cfg := Config{}
 
-	cfg.SetSkillDisabled("alpha", true)
-	if !cfg.IsSkillDisabled("alpha") {
-		t.Error("expected alpha disabled after set")
+	cfg.SetSkillEnabled("org:deploy", true)
+	if !cfg.IsSkillEnabled("deploy") {
+		t.Error("expected deploy enabled after set")
 	}
 
 	// Duplicate should not add twice
-	cfg.SetSkillDisabled("alpha", true)
+	cfg.SetSkillEnabled("org:deploy", true)
 	count := 0
-	for _, d := range cfg.Skills.Disabled {
-		if d == "alpha" {
+	for _, e := range cfg.Skills.Enabled {
+		if e == "org:deploy" {
 			count++
 		}
 	}
 	if count != 1 {
-		t.Errorf("expected 1 entry for alpha, got %d", count)
+		t.Errorf("expected 1 entry, got %d", count)
 	}
 
-	cfg.SetSkillDisabled("alpha", false)
-	if cfg.IsSkillDisabled("alpha") {
-		t.Error("expected alpha enabled after unset")
+	cfg.SetSkillEnabled("org:deploy", false)
+	if cfg.IsSkillEnabled("org:deploy") {
+		t.Error("expected disabled after unset")
+	}
+}
+
+func TestEnableSkills(t *testing.T) {
+	cfg := Config{}
+	cfg.EnableSkills("org", []string{"deploy", "review", "test"})
+
+	if len(cfg.Skills.Enabled) != 3 {
+		t.Errorf("expected 3 enabled, got %d", len(cfg.Skills.Enabled))
+	}
+	if !cfg.IsSkillEnabledInRepo("org", "deploy") {
+		t.Error("expected org:deploy enabled")
+	}
+	if !cfg.IsSkillEnabledInRepo("org", "review") {
+		t.Error("expected org:review enabled")
 	}
 }

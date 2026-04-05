@@ -40,6 +40,7 @@ func main() {
 		newInfoCmd(),
 		newValidateCmd(),
 		newEnableCmd(),
+		newSearchCmd(),
 		newDevCmd(),
 		newSubmitCmd(),
 		newRemoveCmd(),
@@ -82,7 +83,7 @@ func targetNames(targets map[string]string) []string {
 // repoSkillFilter returns a filter that checks if a skill from a given repo is enabled.
 func repoSkillFilter(cfg config.Config, repoName string) func(string) bool {
 	return func(name string) bool {
-		return !cfg.IsSkillDisabledInRepo(repoName, name)
+		return cfg.IsSkillEnabledInRepo(repoName, name)
 	}
 }
 
@@ -137,6 +138,14 @@ func newInitCmd() *cobra.Command {
 				cfg.Targets[name] = t
 			}
 
+			// Auto-enable all skills from the initial repo
+			cacheDir = config.RepoDir(repoName)
+			skills, _ := repo.ListSkills(cacheDir)
+			if len(skills) > 0 {
+				cfg.EnableSkills(repoName, skills)
+				fmt.Printf("\n  Enabled %d skill(s): %s\n", len(skills), strings.Join(skills, ", "))
+			}
+
 			cfgPath := config.Path()
 			if err := config.Save(cfg, cfgPath); err != nil {
 				return err
@@ -185,10 +194,14 @@ func newAddRepoCmd() *cobra.Command {
 			fmt.Println("  ✓ Cloned")
 
 			cfg.Repos = append(cfg.Repos, config.Repo{Name: repoName, URL: repoURL})
+
+			// List available skills but don't auto-enable
+			skills, _ := repo.ListSkills(cacheDir)
 			if err := config.Save(cfg, config.Path()); err != nil {
 				return err
 			}
-			fmt.Printf("✓ Added repo %q. Run 'myskills sync' to install skills.\n", repoName)
+			fmt.Printf("✓ Added repo %q (%d skills available)\n", repoName, len(skills))
+			fmt.Println("Run 'myskills enable' to choose which skills to activate.")
 			return nil
 		},
 	}
@@ -249,7 +262,7 @@ Examples:
 
 			fmt.Printf("  ✓ Found %d skill(s): %s\n", len(skills), strings.Join(skills, ", "))
 			fmt.Printf("  ✓ Added repo %q\n", repoName)
-			fmt.Println("\nRun 'myskills sync' to link skills to your tools.")
+			fmt.Println("\nSkills are disabled by default. Run 'myskills enable' to choose which ones to activate.")
 			return nil
 		},
 	}
@@ -287,7 +300,7 @@ func newSyncCmd() *cobra.Command {
 
 				if len(args) == 1 {
 					name := args[0]
-					if cfg.IsSkillDisabledInRepo(r.Name, name) {
+					if !cfg.IsSkillEnabledInRepo(r.Name, name) {
 						fmt.Printf("[%s] %s is disabled — run 'myskills enable'\n", r.Name, name)
 						continue
 					}
@@ -366,7 +379,7 @@ func newListCmd() *cobra.Command {
 				for _, name := range skills {
 					hash, _ := repo.CommitHashForPath(cacheDir, repo.SkillDir(cacheDir, name))
 					enabled := "yes"
-					if cfg.IsSkillDisabledInRepo(r.Name, name) {
+					if !cfg.IsSkillEnabledInRepo(r.Name, name) {
 						enabled = "no"
 					}
 					status := "not installed"
@@ -421,7 +434,7 @@ func newInfoCmd() *cobra.Command {
 					fmt.Printf("Team:        %s\n", team)
 				}
 				enabled := "yes"
-				if cfg.IsSkillDisabledInRepo(r.Name, name) {
+				if !cfg.IsSkillEnabledInRepo(r.Name, name) {
 					enabled = "no"
 				}
 				fmt.Printf("Enabled:     %s\n", enabled)
@@ -472,15 +485,12 @@ func newEnableCmd() *cobra.Command {
 						desc = s.Description
 					}
 
-					displayName := name
-					if len(cfg.Repos) > 1 {
-						displayName = r.Name + ":" + name
-					}
+					qualified := r.Name + ":" + name
 
 					items = append(items, tui.SkillItem{
-						Name:        displayName,
+						Name:        qualified,
 						Description: desc,
-						Enabled:     !cfg.IsSkillDisabledInRepo(r.Name, name),
+						Enabled:     cfg.IsSkillEnabledInRepo(r.Name, name),
 					})
 				}
 			}
@@ -495,14 +505,9 @@ func newEnableCmd() *cobra.Command {
 				return err
 			}
 
-			// Update config
+			// Update config — item.Name is already "repo:skill" qualified
 			for _, item := range result {
-				// Strip repo prefix if present
-				skillName := item.Name
-				if parts := strings.SplitN(item.Name, ":", 2); len(parts) == 2 {
-					skillName = item.Name // Keep qualified name for disable list
-				}
-				cfg.SetSkillDisabled(skillName, !item.Enabled)
+				cfg.SetSkillEnabled(item.Name, item.Enabled)
 			}
 
 			if err := config.Save(cfg, config.Path()); err != nil {
@@ -516,6 +521,71 @@ func newEnableCmd() *cobra.Command {
 				}
 			}
 			fmt.Printf("✓ %d/%d skills enabled. Run 'myskills sync' to apply.\n", enabled, len(result))
+			return nil
+		},
+	}
+}
+
+// --- search ---
+
+func newSearchCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "search <query>",
+		Short: "Search skills by name or description",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return fmt.Errorf("load config: %w (run 'myskills init' first)", err)
+			}
+
+			query := strings.ToLower(strings.Join(args, " "))
+			found := 0
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			fmt.Fprintln(w, "REPO\tSKILL\tENABLED\tDESCRIPTION")
+
+			for _, r := range cfg.Repos {
+				cacheDir := config.RepoDir(r.Name)
+				skills, err := repo.ListSkills(cacheDir)
+				if err != nil {
+					continue
+				}
+				for _, name := range skills {
+					skillPath := filepath.Join(repo.SkillDir(cacheDir, name), "SKILL.md")
+					desc := ""
+					if s, parseErr := skill.Parse(skillPath); parseErr == nil {
+						desc = s.Description
+					}
+
+					// Match against name and description
+					if !strings.Contains(strings.ToLower(name), query) &&
+						!strings.Contains(strings.ToLower(desc), query) {
+						continue
+					}
+
+					enabled := "yes"
+					if !cfg.IsSkillEnabledInRepo(r.Name, name) {
+						enabled = "no"
+					}
+
+					// Truncate description for table
+					short := desc
+					if len(short) > 70 {
+						short = short[:67] + "..."
+					}
+
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Name, name, enabled, short)
+					found++
+				}
+			}
+			w.Flush()
+
+			if found == 0 {
+				fmt.Printf("No skills matching %q\n", query)
+			} else {
+				fmt.Printf("\n%d result(s)\n", found)
+			}
 			return nil
 		},
 	}
@@ -746,8 +816,10 @@ func newDoctorCmd() *cobra.Command {
 				}
 			}
 
-			if len(cfg.Skills.Disabled) > 0 {
-				fmt.Printf("\nDisabled skills: %s\n", strings.Join(cfg.Skills.Disabled, ", "))
+			if len(cfg.Skills.Enabled) > 0 {
+				fmt.Printf("\nEnabled skills: %s\n", strings.Join(cfg.Skills.Enabled, ", "))
+			} else {
+				fmt.Println("\nEnabled skills: (none)")
 			}
 
 			fmt.Println()
@@ -794,8 +866,10 @@ func newConfigCmd() *cobra.Command {
 			for name, t := range cfg.Targets {
 				fmt.Printf("  %s: enabled=%v path=%s\n", name, t.Enabled, t.SkillPath)
 			}
-			if len(cfg.Skills.Disabled) > 0 {
-				fmt.Printf("\ndisabled skills: %s\n", strings.Join(cfg.Skills.Disabled, ", "))
+			if len(cfg.Skills.Enabled) > 0 {
+				fmt.Printf("\nenabled skills: %s\n", strings.Join(cfg.Skills.Enabled, ", "))
+			} else {
+				fmt.Println("\nenabled skills: (none — run 'myskills enable' to activate)")
 			}
 			return nil
 		},

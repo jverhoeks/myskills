@@ -32,11 +32,11 @@ type Target struct {
 	SkillPath string `yaml:"skill_path"`
 }
 
-// SkillsConfig tracks which skills are enabled/disabled.
-// Disabled entries use "repo:skill" format for multi-repo disambiguation,
-// or just "skill" if unambiguous.
+// SkillsConfig tracks which skills are enabled.
+// Skills are disabled by default — only entries in this list get synced.
+// Entries use "repo:skill" format (e.g., "myskills:deploy").
 type SkillsConfig struct {
-	Disabled []string `yaml:"disabled,omitempty"`
+	Enabled []string `yaml:"enabled,omitempty"`
 }
 
 // Dir returns the myskills config directory.
@@ -109,50 +109,58 @@ func Default() Config {
 	}
 }
 
-// IsSkillDisabled returns true if the skill is explicitly disabled.
-// Checks both "skill" and "repo:skill" formats.
-func (c Config) IsSkillDisabled(name string) bool {
-	for _, d := range c.Skills.Disabled {
-		if d == name {
+// IsSkillEnabled returns true if the skill is in the enabled list.
+// Checks for "repo:skill" qualified entries and bare "skill" entries.
+func (c Config) IsSkillEnabled(name string) bool {
+	for _, e := range c.Skills.Enabled {
+		if e == name {
 			return true
 		}
-		// Also match "repo:skill" format
-		if parts := strings.SplitN(d, ":", 2); len(parts) == 2 && parts[1] == name {
+		// Match "repo:skill" → "skill"
+		if parts := strings.SplitN(e, ":", 2); len(parts) == 2 && parts[1] == name {
 			return true
 		}
 	}
 	return false
 }
 
-// IsSkillDisabledInRepo returns true if the skill from a specific repo is disabled.
-func (c Config) IsSkillDisabledInRepo(repoName, skillName string) bool {
+// IsSkillEnabledInRepo returns true if the skill from a specific repo is enabled.
+func (c Config) IsSkillEnabledInRepo(repoName, skillName string) bool {
 	qualified := repoName + ":" + skillName
-	for _, d := range c.Skills.Disabled {
-		if d == qualified || d == skillName {
+	for _, e := range c.Skills.Enabled {
+		if e == qualified || e == skillName {
 			return true
 		}
 	}
 	return false
 }
 
-// SetSkillDisabled adds or removes a skill from the disabled list.
-func (c *Config) SetSkillDisabled(name string, disabled bool) {
-	if disabled {
-		if !c.IsSkillDisabled(name) {
-			c.Skills.Disabled = append(c.Skills.Disabled, name)
+// SetSkillEnabled adds or removes a skill from the enabled list.
+func (c *Config) SetSkillEnabled(name string, enabled bool) {
+	if enabled {
+		if !c.IsSkillEnabled(name) {
+			c.Skills.Enabled = append(c.Skills.Enabled, name)
 		}
 	} else {
 		var kept []string
-		for _, d := range c.Skills.Disabled {
-			if d != name {
+		for _, e := range c.Skills.Enabled {
+			if e != name {
 				// Also remove "repo:skill" entries that match
-				if parts := strings.SplitN(d, ":", 2); len(parts) == 2 && parts[1] == name {
+				if parts := strings.SplitN(e, ":", 2); len(parts) == 2 && parts[1] == name {
 					continue
 				}
-				kept = append(kept, d)
+				kept = append(kept, e)
 			}
 		}
-		c.Skills.Disabled = kept
+		c.Skills.Enabled = kept
+	}
+}
+
+// EnableSkills adds multiple qualified "repo:skill" entries to the enabled list.
+func (c *Config) EnableSkills(repoName string, skillNames []string) {
+	for _, name := range skillNames {
+		qualified := repoName + ":" + name
+		c.SetSkillEnabled(qualified, true)
 	}
 }
 

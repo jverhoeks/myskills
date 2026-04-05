@@ -161,6 +161,7 @@ myskills enable
 | `myskills sync [skill]` | 🔄 Pull latest and symlink skills to tool directories |
 | `myskills list` | 📋 List skills with enabled/synced status |
 | `myskills info <name>` | ℹ️ Show skill details and files |
+| `myskills search <query>` | 🔎 Search skills by name or description |
 | `myskills enable` | 🎛️ Interactive TUI to toggle skills on/off |
 | `myskills validate <path>` | ✅ Validate a skill against spec + org rules |
 | `myskills dev <name>` | 🆕 Scaffold a new skill |
@@ -201,21 +202,27 @@ myskills sync
 
 ### 🎛️ Enable/disable skills
 
+**Skills are disabled by default** — you explicitly choose which ones to activate. This keeps your AI tools lean and avoids unwanted skills from large repos.
+
 ```bash
+# Search for what you need
+myskills search deploy
+
+# Interactive picker to toggle on/off
 myskills enable
 ```
 
 ```
   Select skills to enable
 
-> [x] dependency-bloat-reduction — Analyze imports, identify trivial/outdated...
-  [x] react-best-practices — React patterns and best practices
-  [ ] experimental-thing — Work in progress, not ready yet
+> [x] myskills:dependency-bloat-reduction — Analyze imports, identify trivial...
+  [ ] agent-skills:react-best-practices — React patterns and best practices
+  [ ] agent-skills:web-design-guidelines — Web design system guidelines
 
   space: toggle  a: toggle all  enter/q: save  esc: cancel
 ```
 
-Disabled skills are removed from your tool directories on the next `myskills sync`.
+After toggling, run `myskills sync` to apply — enabled skills get symlinked, disabled ones get removed.
 
 ### 🔌 Supported tools
 
