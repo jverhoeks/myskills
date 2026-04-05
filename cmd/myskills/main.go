@@ -272,6 +272,52 @@ Examples:
 
 // --- sync ---
 
+// runSync syncs all enabled skills from all repos to all enabled targets.
+func runSync(cfg config.Config) error {
+	targets := enabledTargets(cfg)
+	if len(targets) == 0 {
+		return fmt.Errorf("no targets enabled — run 'myskills config set targets.<name>.enabled true'")
+	}
+
+	totalCount := 0
+	for _, r := range cfg.Repos {
+		cacheDir := config.RepoDir(r.Name)
+
+		skillNames, _ := repo.ListSkills(cacheDir)
+		skillMap := make(map[string]string, len(skillNames))
+		for _, name := range skillNames {
+			skillMap[name] = repo.SkillDir(cacheDir, name)
+		}
+		count, err := sync.AllFromMap(skillMap, targets, repoSkillFilter(cfg, r.Name))
+		if err != nil {
+			fmt.Printf("[%s] ✗ sync failed: %v\n", r.Name, err)
+			continue
+		}
+		fmt.Printf("[%s] ✓ %d skills linked to %s\n", r.Name, count, strings.Join(targetNames(targets), ", "))
+		totalCount += count
+	}
+
+	fmt.Printf("\n✓ %d total skills linked\n", totalCount)
+
+	// Update manifest
+	mPath := manifestPath()
+	m, _ := manifest.Load(mPath)
+	m.LastSync = time.Now().UTC()
+	for _, r := range cfg.Repos {
+		cacheDir := config.RepoDir(r.Name)
+		skills, _ := repo.ListSkills(cacheDir)
+		for _, name := range skills {
+			hash, _ := repo.CommitHashForPath(cacheDir, repo.SkillDir(cacheDir, name))
+			m.Skills[name] = manifest.SkillEntry{
+				Commit:   hash,
+				SyncedAt: time.Now().UTC(),
+			}
+		}
+	}
+	manifest.Save(m, mPath)
+	return nil
+}
+
 func newSyncCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "sync [skill-name]",
@@ -286,71 +332,35 @@ func newSyncCmd() *cobra.Command {
 				return fmt.Errorf("no repos configured — run 'myskills init'")
 			}
 
-			targets := enabledTargets(cfg)
-			if len(targets) == 0 {
-				return fmt.Errorf("no targets enabled — run 'myskills config set targets.<name>.enabled true'")
-			}
-
-			totalCount := 0
+			// Pull all repos
 			for _, r := range cfg.Repos {
 				cacheDir := config.RepoDir(r.Name)
 				fmt.Printf("[%s] Pulling latest...\n", r.Name)
 				if err := repo.Pull(cacheDir); err != nil {
 					fmt.Printf("[%s] ✗ pull failed: %v\n", r.Name, err)
-					continue
 				}
+			}
 
-				if len(args) == 1 {
-					name := args[0]
+			// Single skill sync
+			if len(args) == 1 {
+				name := args[0]
+				targets := enabledTargets(cfg)
+				for _, r := range cfg.Repos {
 					if !cfg.IsSkillEnabledInRepo(r.Name, name) {
-						fmt.Printf("[%s] %s is disabled — run 'myskills enable'\n", r.Name, name)
 						continue
 					}
+					cacheDir := config.RepoDir(r.Name)
 					skillDir := repo.SkillDir(cacheDir, name)
 					if err := sync.One(skillDir, name, targets); err != nil {
 						continue
 					}
 					fmt.Printf("[%s] ✓ %s linked to %s\n", r.Name, name, strings.Join(targetNames(targets), ", "))
-					totalCount++
-				} else {
-					// Build skill map: name → source path
-					skillNames, _ := repo.ListSkills(cacheDir)
-					skillMap := make(map[string]string, len(skillNames))
-					for _, name := range skillNames {
-						skillMap[name] = repo.SkillDir(cacheDir, name)
-					}
-					count, err := sync.AllFromMap(skillMap, targets, repoSkillFilter(cfg, r.Name))
-					if err != nil {
-						fmt.Printf("[%s] ✗ sync failed: %v\n", r.Name, err)
-						continue
-					}
-					fmt.Printf("[%s] ✓ %d skills linked to %s\n", r.Name, count, strings.Join(targetNames(targets), ", "))
-					totalCount += count
+					return nil
 				}
+				return fmt.Errorf("skill %q not found or not enabled — run 'myskills enable'", name)
 			}
 
-			if len(args) == 0 {
-				fmt.Printf("\n✓ %d total skills linked\n", totalCount)
-			}
-
-			// Update manifest
-			mPath := manifestPath()
-			m, _ := manifest.Load(mPath)
-			m.LastSync = time.Now().UTC()
-			for _, r := range cfg.Repos {
-				cacheDir := config.RepoDir(r.Name)
-				skills, _ := repo.ListSkills(cacheDir)
-				for _, name := range skills {
-					hash, _ := repo.CommitHashForPath(cacheDir, repo.SkillDir(cacheDir, name))
-					m.Skills[name] = manifest.SkillEntry{
-						Commit:   hash,
-						SyncedAt: time.Now().UTC(),
-					}
-				}
-			}
-			manifest.Save(m, mPath)
-
-			return nil
+			return runSync(cfg)
 		},
 	}
 }
@@ -464,68 +474,88 @@ func newInfoCmd() *cobra.Command {
 // --- enable ---
 
 func newEnableCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "enable",
 		Short: "Toggle which skills are enabled (interactive picker)",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig()
-			if err != nil {
-				return fmt.Errorf("load config: %w (run 'myskills init' first)", err)
-			}
-
-			var items []tui.SkillItem
-			for _, r := range cfg.Repos {
-				cacheDir := config.RepoDir(r.Name)
-				skills, err := repo.ListSkills(cacheDir)
-				if err != nil {
-					continue
-				}
-				for _, name := range skills {
-					skillPath := filepath.Join(repo.SkillDir(cacheDir, name), "SKILL.md")
-					desc := ""
-					if s, err := skill.Parse(skillPath); err == nil {
-						desc = s.Description
-					}
-
-					qualified := r.Name + ":" + name
-
-					items = append(items, tui.SkillItem{
-						Name:        qualified,
-						Description: desc,
-						Enabled:     cfg.IsSkillEnabledInRepo(r.Name, name),
-					})
-				}
-			}
-
-			if len(items) == 0 {
-				fmt.Println("No skills found in any repo.")
-				return nil
-			}
-
-			result, err := tui.RunPicker(items)
-			if err != nil {
-				return err
-			}
-
-			// Update config — item.Name is already "repo:skill" qualified
-			for _, item := range result {
-				cfg.SetSkillEnabled(item.Name, item.Enabled)
-			}
-
-			if err := config.Save(cfg, config.Path()); err != nil {
-				return err
-			}
-
-			enabled := 0
-			for _, item := range result {
-				if item.Enabled {
-					enabled++
-				}
-			}
-			fmt.Printf("✓ %d/%d skills enabled. Run 'myskills sync' to apply.\n", enabled, len(result))
-			return nil
-		},
 	}
+	doSync := cmd.Flags().BoolP("sync", "s", false, "Sync after saving (pull + link enabled skills)")
+
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		cfg, err := loadConfig()
+		if err != nil {
+			return fmt.Errorf("load config: %w (run 'myskills init' first)", err)
+		}
+
+		// Pull all repos first to have latest skills
+		for _, r := range cfg.Repos {
+			cacheDir := config.RepoDir(r.Name)
+			fmt.Printf("[%s] Pulling latest...\n", r.Name)
+			if err := repo.Pull(cacheDir); err != nil {
+				fmt.Printf("[%s] ✗ pull failed: %v\n", r.Name, err)
+			}
+		}
+
+		var items []tui.SkillItem
+		for _, r := range cfg.Repos {
+			cacheDir := config.RepoDir(r.Name)
+			skills, err := repo.ListSkills(cacheDir)
+			if err != nil {
+				continue
+			}
+			for _, name := range skills {
+				skillPath := filepath.Join(repo.SkillDir(cacheDir, name), "SKILL.md")
+				desc := ""
+				if s, err := skill.Parse(skillPath); err == nil {
+					desc = s.Description
+				}
+
+				qualified := r.Name + ":" + name
+
+				items = append(items, tui.SkillItem{
+					Name:        qualified,
+					Description: desc,
+					Enabled:     cfg.IsSkillEnabledInRepo(r.Name, name),
+				})
+			}
+		}
+
+		if len(items) == 0 {
+			fmt.Println("No skills found in any repo.")
+			return nil
+		}
+
+		result, err := tui.RunPicker(items)
+		if err != nil {
+			return err
+		}
+
+		// Update config — item.Name is already "repo:skill" qualified
+		for _, item := range result {
+			cfg.SetSkillEnabled(item.Name, item.Enabled)
+		}
+
+		if err := config.Save(cfg, config.Path()); err != nil {
+			return err
+		}
+
+		enabled := 0
+		for _, item := range result {
+			if item.Enabled {
+				enabled++
+			}
+		}
+		fmt.Printf("✓ %d/%d skills enabled\n", enabled, len(result))
+
+		// Auto-sync if --sync flag
+		if *doSync {
+			fmt.Println("\nSyncing...")
+			return runSync(cfg)
+		}
+
+		fmt.Println("Run 'myskills sync' to apply, or use 'myskills enable --sync' next time.")
+		return nil
+	}
+	return cmd
 }
 
 // --- search ---
